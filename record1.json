@@ -1,0 +1,262 @@
+{
+ "functions": [
+  {
+   "id": "node3",
+   "location": "3:0-5:12",
+   "pragmas": [],
+   "functionName": "main",
+   "name": "Lambda",
+   "portsSetup": null,
+   "inPorts": [
+    {
+     "nodeId": "node3",
+     "type": {
+      "location": "1:14-1:58",
+      "element": {
+       "name": "record",
+       "location": "1:20-1:57",
+       "fields": {
+        "A": {
+         "location": "1:30-1:44",
+         "element": {
+          "location": "1:36-1:43",
+          "name": "integer"
+         },
+         "multiType": "array"
+        },
+        "n": {
+         "location": "1:49-1:56",
+         "name": "integer"
+        }
+       }
+      },
+      "customType": true,
+      "typeName": "compl_",
+      "multiType": "array"
+     },
+     "index": 0,
+     "label": "S"
+    }
+   ],
+   "outPorts": [
+    {
+     "nodeId": "node3",
+     "type": {
+      "location": "3:31-3:45",
+      "element": {
+       "location": "3:37-3:44",
+       "name": "integer"
+      },
+      "multiType": "array"
+     },
+     "index": 0
+    }
+   ],
+   "nodes": [
+    {
+     "id": "node2",
+     "location": "4:3-4:9",
+     "name": "RecordAccess",
+     "field": "A",
+     "inPorts": [
+      {
+       "nodeId": "node2",
+       "type": {
+        "name": "record",
+        "location": "1:20-1:57",
+        "fields": {
+         "A": {
+          "location": "1:30-1:44",
+          "element": {
+           "location": "1:36-1:43",
+           "name": "integer"
+          },
+          "multiType": "array"
+         },
+         "n": {
+          "location": "1:49-1:56",
+          "name": "integer"
+         }
+        }
+       },
+       "index": 0,
+       "label": "record"
+      }
+     ],
+     "outPorts": [
+      {
+       "nodeId": "node2",
+       "type": {
+        "location": "1:30-1:44",
+        "element": {
+         "location": "1:36-1:43",
+         "name": "integer"
+        },
+        "multiType": "array"
+       },
+       "index": 0
+      }
+     ],
+     "pragmas": []
+    },
+    {
+     "id": "node1",
+     "location": "4:3-4:7",
+     "name": "ArrayAccess",
+     "inPorts": [
+      {
+       "nodeId": "node1",
+       "type": {
+        "location": "1:14-1:58",
+        "element": {
+         "name": "record",
+         "location": "1:20-1:57",
+         "fields": {
+          "A": {
+           "location": "1:30-1:44",
+           "element": {
+            "location": "1:36-1:43",
+            "name": "integer"
+           },
+           "multiType": "array"
+          },
+          "n": {
+           "location": "1:49-1:56",
+           "name": "integer"
+          }
+         }
+        },
+        "customType": true,
+        "typeName": "compl_",
+        "multiType": "array"
+       },
+       "index": 0,
+       "label": "array"
+      },
+      {
+       "nodeId": "node1",
+       "type": {
+        "location": "not applicable",
+        "name": "integer"
+       },
+       "index": 1,
+       "label": "index"
+      }
+     ],
+     "outPorts": [
+      {
+       "nodeId": "node1",
+       "type": {
+        "name": "record",
+        "location": "1:20-1:57",
+        "fields": {
+         "A": {
+          "location": "1:30-1:44",
+          "element": {
+           "location": "1:36-1:43",
+           "name": "integer"
+          },
+          "multiType": "array"
+         },
+         "n": {
+          "location": "1:49-1:56",
+          "name": "integer"
+         }
+        }
+       },
+       "index": 0
+      }
+     ]
+    },
+    {
+     "id": "node0",
+     "location": "4:5-4:6",
+     "value": "1",
+     "name": "Literal",
+     "outPorts": [
+      {
+       "nodeId": "node0",
+       "type": {
+        "location": "4:5-4:6",
+        "name": "integer"
+       },
+       "index": 0
+      }
+     ]
+    }
+   ],
+   "edges": [
+    {
+     "from": [
+      "node1",
+      0
+     ],
+     "to": [
+      "node2",
+      0
+     ]
+    },
+    {
+     "from": [
+      "node3",
+      0
+     ],
+     "to": [
+      "node1",
+      0
+     ]
+    },
+    {
+     "from": [
+      "node0",
+      0
+     ],
+     "to": [
+      "node1",
+      1
+     ]
+    },
+    {
+     "from": [
+      "node2",
+      0
+     ],
+     "to": [
+      "node3",
+      0
+     ]
+    }
+   ]
+  }
+ ],
+ "errors": [],
+ "definitions": [
+  {
+   "name": "compl_",
+   "type": {
+    "location": "1:14-1:58",
+    "element": {
+     "name": "record",
+     "location": "1:20-1:57",
+     "fields": {
+      "A": {
+       "location": "1:30-1:44",
+       "element": {
+        "location": "1:36-1:43",
+        "name": "integer"
+       },
+       "multiType": "array"
+      },
+      "n": {
+       "location": "1:49-1:56",
+       "name": "integer"
+      }
+     }
+    },
+    "customType": true,
+    "typeName": "compl_",
+    "multiType": "array"
+   }
+  }
+ ]
+}
