@@ -3,8 +3,9 @@
 """
 code generator if
 """
-from ..node import Node, to_cpp_method
-from ..cpp.cpp_codegen import CppVariable, indent_cpp, CppBlock, cpp_eval, CppAssignment
+from ..node import Node, to_llvm_method
+from ..llvm.llvm_codegen import llvm_eval, BranchCount
+import llvmlite.ir as ll
 
 
 class If(Node):
@@ -12,84 +13,59 @@ class If(Node):
     name = "if"
     copy_parent_input_values = True
 
-    @to_cpp_method
-    def to_cpp(self, block):
+    @to_llvm_method
+    def to_llvm(self, irbuilder: ll.IRBuilder):
 
         if_results = []
 
-        for index, o_p in enumerate(self.out_ports):
-            if_result = CppVariable(o_p.label,
-                                    self.out_ports[index].type.cpp_type)
+        BranchCount.count += 1  # надо инкапсуляцию
+
+        follower = irbuilder.append_basic_block(name=f"If{BranchCount.count}follower")
+
+        for _, o_p in enumerate(self.out_ports):
+            if_result = irbuilder.alloca(self.o_p.type.llvm_type, name=o_p.label)
             if_results.append(if_result)
-            block.add_variable(if_result)
             o_p.value = if_result
 
-        # create cpp blocks for conditions and branches:
-        cond_blocks = ([block] +
-                       [CppBlock(False, False)
-                        for i in range(len(self.branches) - 1)])
-        else_if_blocks = [CppBlock(True, True)
-                          for i in range(len(self.branches) - 1)]
-
-        condition_results = self.condition.to_cpp(self, cond_blocks)
-
-        then_block = CppBlock()
-        else_block = CppBlock()
+        cond_blocks = self.condition.to_llvm(self, irbuilder)
 
         # evaluate branches:
-
         for o_p in self.out_ports:
-            self.branches[0].to_cpp(self, o_p, then_block)
-            for index, (branch, branch_block) in enumerate(
-                zip(self.branches[1:-1], else_if_blocks[:-1])
-            ):
-                branch.to_cpp(self, o_p, branch_block)
-            self.branches[-1].to_cpp(self, o_p, else_block)
-
-        # make the resulting string:
-
-        elseifs = ""
-        for elseif_block, cond_result in zip(else_if_blocks,
-                                             condition_results[1:]):
-            elseifs += f"\nelse if({cond_result})\n{str(elseif_block)}"
-
-        block.add_code(
-            f"if({condition_results[0]})"
-            "\n{\n"
-            f"{indent_cpp(str(then_block))}"
-            "\n}" + elseifs + "\nelse\n"
-            "{\n"
-            f"{indent_cpp(str(else_block))}"
-            "\n}"
-        )
+            for index, then_block in enumerate(cond_blocks):
+                irbuilder.goto_block(then_block)
+                self.branches[index].to_llvm(self, o_p, irbuilder, follower)
 
 
 class Branch(Node):
-    def to_cpp(self, parent_if, result_port, block):
+    def to_llvm(self, parent_if, result_port, irbuilder: ll.IRBuilder, follower):
         for i_p, p_ip in zip(self.in_ports, parent_if.in_ports):
             i_p.value = p_ip.value
-        block.add_code(
-            CppAssignment(
-                result_port.value, cpp_eval(self.out_ports[result_port.index],
-                                            block)
+
+            irbuilder.store(
+                result_port.value, llvm_eval(self.out_ports[result_port.index])
             )
-        )
+            irbuilder.branch(follower)
 
 
 class Condition(Node):
-    def to_cpp(self, parent_if, blocks):
-        name = "if_test"
+    def to_llvm(self, parent_if, irbuilder):
 
-        condition_results = []
+        branches = []
 
         for i_p, p_ip in zip(self.in_ports, parent_if.in_ports):
             i_p.value = p_ip.value
 
-        for o_p, block in zip(self.out_ports, blocks):
-            cond_result = CppVariable(name, "bool")
-            blocks[0].add_variable(cond_result)
-            blocks[0].add_code(CppAssignment(cond_result,
-                                             cpp_eval(o_p, blocks[0])))
-            condition_results.append(cond_result)
+        for condition_index, o_p in enumerate(self.out_ports):
+            cond_result = llvm_eval(o_p, irbuilder)
+            truebr = irbuilder.append_basic_block(
+                name=f"If{BranchCount.count}true{condition_index}"
+            )
+            falsebr = irbuilder.append_basic_block(
+                name=f"If{BranchCount.count}false{condition_index}"
+            )
+            irbuilder.cbranch(cond_result, truebr, falsebr)
+            irbuilder.goto_block(falsebr)
+            branches.append(truebr)
+        branches.append(irbuilder.block)
 
-        return condition_results
+        return branches

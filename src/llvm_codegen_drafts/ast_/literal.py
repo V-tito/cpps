@@ -12,7 +12,7 @@ class Literal(Node):
 
     needs_init = True
 
-    def llvm_ir(self, irbuilder: ll.IRBuilder): #все еще что делает needs_init и надо ли здесь объявлять константу? наверное, надо.
+    def to_llvm(self, irbuilder: ll.IRBuilder): #все еще что делает needs_init и надо ли здесь объявлять константу? наверное, надо.
         # if self.value == True:
         #    self.value = "true"
 

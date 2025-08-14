@@ -95,6 +95,26 @@ def main(args):
             module = module.Module()
             module.load_from_json_data(json_names(parsed))
             codegen.codegen(module)
+        elif "--llvmdebug" in args:
+            from code_gen import compile_to_llvm
+            module_name = ""  # args[1].split(".")[:-1]
+            # convert it to JSON text:
+            ir = json.dumps(json_names(parsed), indent=1)
+            try:
+                llvm_src = compile_to_llvm(ir, module_name)
+                # put out a JSON containing the code and errors,
+                # or just plain code:
+                if "--llvmjson" in args:
+                    print(json.dumps(
+                                 {"errors": [],
+                                  "llvm_src": [llvm_src]}
+                                ))
+                else:
+                    print(llvm_src)
+            except Exception as e:
+                if debug_enabled():
+                    raise (e)
+                return {"errors": [str(e)], "llvm_src": None}
         else:
             '''Parse and generate a C++ program'''
             import codegen.codegen_state

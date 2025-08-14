@@ -6,14 +6,14 @@ code generator node (mostly deserealizing code)
 from .port import Port
 from .type import get_type
 from .edge import Edge
-from .cpp.cpp_codegen import cpp_eval #тут будет llvm_eval
+from .llvm.llvm_codegen import llvm_eval #тут будет llvm_eval
 
 
 def get_node(node_id):
     return Node.node_index[node_id]
 
 
-def to_cpp_method(fn): #это хер знает что, пока не трогаем
+def to_llvm_method(fn): #это хер знает что, пока не трогаем
     def wrapped(self, block):
         if (hasattr(self, "name_child_output_values") and
            self.name_child_output_values):
@@ -38,7 +38,7 @@ def to_cpp_method(fn): #это хер знает что, пока не трог�
             and self.copy_parent_input_values
         ):
             for i_p in self.in_ports:
-                cpp_eval(i_p, block)
+                llvm_eval(i_p, block)
 
         return fn(self, block)
 
@@ -59,7 +59,7 @@ class Node:
             if not src_port.in_port:
                 src_port.label = o_p.label
                 # mark port as renamed, so it can pick
-                # appropriate name for it's variable:
+                # an appropriate name for its variable:
                 src_port.renamed = True
 
     @staticmethod
@@ -79,7 +79,7 @@ class Node:
                 if hasattr(node, "pragma_group")
                 and node.pragma_group == group_index]
 
-    def get_parent_node(self):
+    def get_parent_node(self): 
         for name, node in Node.node_index.items():
             if hasattr(node, "nodes") and self in node.nodes:
                 return node

@@ -5,18 +5,20 @@ code generator function
 """
 
 
-from ..node import Node, to_cpp_method
-from ..llvm.codegen import llvm_eval
+from ..node import Node, to_llvm_method
+from ..llvm.llvm_codegen import llvm_eval
 from ..error import CodeGenError
-from ..cpp import template
-from ..codegen_state import global_no_error
+
+# from ..cpp import template
+# from ..codegen_state import global_no_error
+import llvmlite.ir as ll
 
 
-def gen_time_limit_template(function):
+"""def gen_time_limit_template(function):
 
     class_template = template.load_template("time_out_class.cpp")
 
-    '''generate return values assignments:'''
+    #generate return values assignments:
     block = CppBlock()
 
     arg_vars = ["f->" + i_p.label for i_p in function.in_ports]
@@ -55,9 +57,8 @@ def gen_time_limit_template(function):
 
     class_str = class_template.substitute(inserts)
     return class_str
-
-
-def time_limited_execution_cpp(function, args: str):
+"""
+"""def time_limited_execution_cpp(function, args: str):
     block = CppBlock()
     if hasattr(function, "cpp_function_name"):
         code = function.cpp_function_name.title() + "ExecutionManager"
@@ -69,7 +70,7 @@ def time_limited_execution_cpp(function, args: str):
     class_object_name = CppVariable.get_name("exec_man")
     code += f" {class_object_name}({args}, {time});"
     block.add_code(code)
-    return str(class_object_name), str(block)
+    return str(class_object_name), str(block)"""
 
 
 class Function(Node):
@@ -87,7 +88,9 @@ class Function(Node):
         new_name = f"service_function{Function.service_function_counter}_for_" + name
         while new_name in Function.functions:
             Function.service_function_counter += 1
-            new_name = f"service_function{Function.service_function_counter}_for_" + name
+            new_name = (
+                f"service_function{Function.service_function_counter}_for_" + name
+            )
         return new_name
 
     @property
@@ -103,8 +106,7 @@ class Function(Node):
     def ret_cpp_type(self):
         if self.num_outputs > 1:
             ret_types = [port.type for port in self.out_ports]
-            return "tuple<" + ", ".join([type_.cpp_type
-                                         for type_ in ret_types]) + ">"
+            return "tuple<" + ", ".join([type_.cpp_type for type_ in ret_types]) + ">"
         else:
             return self.out_ports[0].type.cpp_type
 
@@ -113,93 +115,83 @@ class Function(Node):
         ret_type_str = (
             ret_types[0].cpp_type
             if len(ret_types) == 1
-            else "tuple<" + ", ".join([type_.cpp_type
-                                       for type_ in ret_types]) + ">"
+            else "tuple<" + ", ".join([type_.cpp_type for type_ in ret_types]) + ">"
         )
         cpp_function_name = (
-            "sisal_main" if self.function_name == "main"
-            else self.function_name
+            "sisal_main" if self.function_name == "main" else self.function_name
         )
-        arg_str = ", ".join([port.value.definition_str()
-                             for port in self.in_ports])
+        arg_str = ", ".join([port.value.definition_str() for port in self.in_ports])
 
         return f"{ret_type_str} {cpp_function_name}({arg_str});"
 
     def process_timeout(self):
         if hasattr(self, "pragmas"):
-            time_out = next((p for p in self.pragmas if p["name"] == "max_time")
-                         , None)
+            time_out = next((p for p in self.pragmas if p["name"] == "max_time"), None)
             if time_out:
                 self.module.add_header("pthread.h")
-                inserts = gen_time_limit_template(self)
-                self.module.add_service_class(inserts)
+                # inserts = gen_time_limit_template(self)
+                # self.module.add_service_class(inserts)
 
-    @to_cpp_method
-    def to_cpp(self, block=None):
+    @to_llvm_method
+    def to_llvm(self, irbuilder: ll.IRBuilder):
         # reset variable index:
-        CppVariable.variable_index = {}
+        # CppVariable.variable_index = {}
 
-        # collect return types in a list:
-        ret_types = [port.type for port in self.out_ports]
+        # collect ir types corresponding to return types in a list:
+        ret_types = [port.type.llvm_type() for port in self.out_ports]
+        # same for arg types
+        args = [port.type.llvm_type() for port in self.in_ports]
 
-        # assign arguments to C++ vars:
-        for port in self.in_ports:
-            port.value = CppVariable(port.label, port.type)
+        # format types for llvmlite
+        if len(ret_types) == 0:
+            ret_type = ll.VoidType()
+        else:
+            if len(ret_types) == 1:
+                ret_type = ret_types[0]
+            else:
+                ret_type = ll.LiteralStructType(ret_types)
+        if len(args) == 0:
+            args = None
+        if len(args) == 1:
+            args = args[0]
 
-        arg_str = ", ".join([port.value.definition_str()
-                             for port in self.in_ports])
+        # make a corresponding function type
 
-        # initialize a block of C++ code for function body:
-        function_block = CppBlock()
+        func_type = ll.FunctionType(ret_type, args)
+
+        # choose an appropriate name for the function (rename main):
+
+        self.ir_function_name = (
+            "sisal_main" if self.function_name == "main" else self.function_name
+        )
+
+        # make a function object
+        func = ll.Function(irbuilder.module, func_type, self.ir_function_name)
+        entry_block = func.append_basic_block(name="entry")
+        irbuilder.position_at_start(entry_block)
+
+        # assign arguments to temp vars:
+        for port, arg in zip(self.in_ports, func.args):
+            port.value = arg
 
         # evaluate function output values (results):
+        ret_vals = []
         for index, o_p in enumerate(self.out_ports):
-            cpp_eval(
+            llvm_eval(
                 o_p,
-                function_block,
+                irbuilder,
             )
-
-        # select appropriate name for the C++ function
-        # (rename it if it is main):
-        self.cpp_function_name = (
-            "sisal_main" if self.function_name == "main"
-            else self.function_name
-        )
-
-        # generate C++ return types:
-        self.ret_type_str = (
-            ret_types[0].cpp_type
-            if len(ret_types) == 1
-            else "tuple<" + ", ".join([type_.cpp_type
-                                       for type_ in ret_types]) + ">"
-        )
-
-        # generate results return code
-        return_value = (
-            f"return {o_p.value};"
-            if len(ret_types) == 1
-            else "return {"
-            + ", ".join([str(o_p.value) for o_p in self.out_ports])
-            + "};"
-        )
-
-        # convert the block to string:
-        str_function_block = str(function_block)
+            ret_vals.append(o_p.value)
+        if len(ret_vals) == 1:
+            ret_val = ll.Constant(ret_type, ret_vals[0])
+        else:
+            ret_val = ll.Constant(ret_type, ret_vals)
+        irbuilder.ret(ret_val)
 
         # check if we requested time_out (time limiting) and process that:
-        self.process_timeout()
+        # self.process_timeout()
 
-        # assemble the final string:
-        function_string = (
-            f"{self.ret_type_str} {self.cpp_function_name}({arg_str})\n"
-            "{\n"
-            + (indent_cpp(str_function_block) + "\n"
-               if str_function_block else "")
-            + indent_cpp(return_value)
-            + "\n}"
-        )
-
-        return function_string
+        return func
 
 
 def create_main():
@@ -210,41 +202,34 @@ def create_main():
         raise CodeGenError("Module must contain main-function.")
     main = Function.functions["main"]
 
-    body = ("Json::Value root;\n"
-            "std::cin >> root;\n"
-            "Json::Value json_result;\n")
+    body = "Json::Value root;\n" "std::cin >> root;\n" "Json::Value json_result;\n"
 
     # check if needed values are passed to the program:
 
     for port in main.in_ports:
-        body += f"CHECK_INPUT_ARGUMENT(\"{port.value.name}\");\n"
+        body += f'CHECK_INPUT_ARGUMENT("{port.value.name}");\n'
 
     # add code that loads values from input JSON
 
     body += (
         "\n".join(
             [
-                port.value.get_load_from_json_code(
-                    f'root["{port.value.name}"]') +
-                ""
+                port.value.get_load_from_json_code(f'root["{port.value.name}"]') + ""
                 for port in main.in_ports
             ]
         )
         + "\n"
     )
 
-    args = ", ".join([str(port.value)
-                      for port in main.in_ports])
+    args = ", ".join([str(port.value) for port in main.in_ports])
 
     time_out = main.get_pragma("max_time")
     if time_out:
-        class_object_name, added_code = time_limited_execution_cpp(main, args)
-        body += added_code + "\n"
-        sisal_main_call = class_object_name + ".retval"
+        '''class_object_name, added_code = time_limited_execution_cpp(main, args)
+        body += added_code + "\n"'''
+        sisal_main_call = """class_object_name""" """+""" ".retval"
     else:
-        sisal_main_call = (
-            "sisal_main(" + args + ")"
-        )
+        sisal_main_call = "sisal_main(" + args + ")"
 
     #  sisal_main_result = main.
 
@@ -270,9 +255,9 @@ def create_main():
 
     return (
         "int main(int argc, char **argv)\n"
-        "{\n"
+        '''"{\n"
         f"{indent_cpp(body)}\n"
         f"{indent_cpp(result_output_code)}\n"
         f"{indent_cpp('return 0;')}"
-        "\n}"
+        "\n}"'''
     )

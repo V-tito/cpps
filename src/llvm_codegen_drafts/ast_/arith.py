@@ -1,48 +1,85 @@
-from ctypes import CFUNCTYPE, c_int
 import sys
 from ..node import Node
 from ..port import Port
 from ..edge import Edge
-from ..llvm.codegen import llvm_eval
+from ..llvm.llvm_codegen import llvm_eval
 
 import llvmlite.ir as ll
 import llvmlite.binding as llvm
 
 class Binary(Node):
-    def llvm_ir(self,irbuilder: ll.IRBuilder): #как быть с функциями? они создают отдельное пространство, в котором разные операторы генерируют блоки. к функции вызов eval может прийти только от вызова. есть операторы, создающие новые блоки. передавать функцию? но по ней не определишь конкретный блок. можно ли по блоку определить функцию? если ООП, то должно быть можно. а блок по irbuilder-у?
-        
-        operator_map={"+": lambda x,y: irbuilder.add(x,y), #а можно ли здесь ссылаться на irbuilder, если мапа не в самой функции?
-          "-": lambda x,y: irbuilder.sub(x,y),
-          "*": lambda x,y: irbuilder.mul(x,y),
-          "/": lambda x,y: irbuilder.sdiv(x,y), #тут зависит от типа....
+    def llvm_ir(self,irbuilder:ll.IRBuilder): #как быть с функциями? они создают отдельное пространство, в котором разные операторы генерируют блоки. к функции вызов eval может прийти только от вызова. есть операторы, создающие новые блоки. передавать функцию? но по ней не определишь конкретный блок. можно ли по блоку определить функцию? если ООП, то должно быть можно. а блок по irbuilder-у?
+
+        int_operator_map={"+": lambda x,y,label='': irbuilder.add(x,y,name=label), #а можно ли здесь ссылаться на irbuilder, если мапа не в самой функции?
+          "-": lambda x,y,label='': irbuilder.sub(x,y,name=label),
+          "*": lambda x,y,label='': irbuilder.mul(x,y,name=label),
+          "/": lambda x,y,label='': irbuilder.sdiv(x,y,name=label), #тут зависит от типа....
           #"**": lambda x, y: как реализовать степень в llvmlite?
-          ">": lambda x, y: irbuilder.icmp_signed('>',x,y), #тут для целочисленных со знаком; надо реализовать словарик в зависимости от типа
-        "<": lambda x, y: irbuilder.icmp_signed('<',x,y),
-        "=": lambda x, y: irbuilder.icmp_signed('==',x,y),
-        "!=": lambda x, y: irbuilder.icmp_signed('!=',x,y),
-        ">=": lambda x, y: irbuilder.icmp_signed('>=',x,y),
-        "<=": lambda x, y: irbuilder.icmp_signed('<=',x,y),
-        "&": lambda x, y: irbuilder.and_(x,y),
-        "|": lambda x, y: irbuilder.or_(x,y)
+          ">": lambda x, y,label='': irbuilder.icmp_signed(">",x,y,name=label), #тут для целочисленных со знаком; надо реализовать словарик в зависимости от типа
+        "<": lambda x, y,label='':irbuilder.icmp_signed("<",x,y,name=label),
+        "=": lambda x, y,label='': irbuilder.icmp_signed("=",x,y,name=label),
+        "!=": lambda x, y,label='': irbuilder.icmp_signed("!=",x,y,name=label),
+        ">=": lambda x, y,label='': irbuilder.icmp_signed(">=",x,y,name=label),
+        "<=": lambda x, y,label='': irbuilder.icmp_signed("<=",x,y,name=label),
+        "&": lambda x, y,label='': irbuilder.and_(x,y,name=label),
+        "|": lambda x, y,label='': irbuilder.or_(x,y,name=label)
         }
-        
+        float_operator_map={"+": lambda x,y,label='': irbuilder.fadd(x,y,name=label), #а можно ли здесь ссылаться на irbuilder, если мапа не в самой функции?
+          "-": lambda x,y,label='': irbuilder.fsub(x,y,name=label),
+          "*": lambda x,y,label='': irbuilder.fmul(x,y,name=label),
+          "/": lambda x,y,label='': irbuilder.fdiv(x,y,name=label), #тут зависит от типа....
+          #"**": lambda x, y: как реализовать степень в llvmlite?
+          ">": lambda x, y,label='': irbuilder.fcmp_unordered(">",x,y,name=label), #тут для целочисленных со знаком; надо реализовать словарик в зависимости от типа
+        "<": lambda x, y,label='': irbuilder.fcmp_unordered("<",x,y,name=label),
+        "=": lambda x, y,label='': irbuilder.fcmp_unordered("=",x,y,name=label),
+        "!=": lambda x, y,label='': irbuilder.fcmp_unordered("!=",x,y,name=label),
+        ">=": lambda x, y,label='': irbuilder.fcmp_unordered(">=",x,y,name=label),
+        "<=": lambda x, y,label='': irbuilder.fcmp_unordered("<=",x,y,name=label)
+        }
         left=llvm_eval(self.in_ports[0],irbuilder)
         right=llvm_eval(self.in_ports[1],irbuilder)
         operator=self.operator #есть же у binary такое поле?
-        res=operator_map[operator](left,right)
-        self.out_ports[0].value = res #опять же, норм ли его возвращать с точки зрения специфики llvm и llvmlite?
+        type_left=left.type
+        type_right=right.type
+        isintl=isinstance(type_left,ll.IntType)
+        isintr=isinstance(type_right,ll.IntType)
+
+        if self.out_ports[0].label:
+            label=self.out_ports[0].label
+        else:
+            label=''
+        
+        if isintl and isintr:
+            res=int_operator_map[operator](left,right,label)
+        else:
+            if isintl:
+                left=irbuilder.sitofp(left,ll.DoubleType)
+            if isintr:
+                right=irbuilder.sitofp(right,ll.DoubleType)
+            isfl=isinstance(type_left,ll.BaseFloatType)
+            isfr=isinstance(type_right,ll.BaseFloatType)
+            if isfl and isfr:
+                res=float_operator_map[operator](left,right,label) #добавить сюда else res=error(числовой)
+        self.out_ports[0].value = res #ура я могу
     
 class Unary (Node):
 
-    def llvm_ir(self,irbuilder:ll.IRBuilder):
-        
-        operator_map={
-            "+": lambda x: x,
-            "-": lambda x: irbuilder.neg (x),#целочисленное
-            "!": lambda x: irbuilder.not_(x)
+    def to_llvm(self,irbuilder:ll.IRBuilder):
+        int_operator_map={
+            "+": lambda x, label='': irbuilder.add(ll.Constant(type(x),0),x,name=label),#затычка в целом после редукций identity не должно возникать
+            "-": lambda x, label='': irbuilder.neg (x,name=label),#целочисленное
+            "!": lambda x,label='': irbuilder.not_(x,name=label)
         }
-
+        
+        float_operator_map={
+            "+": lambda x,label='': irbuilder.fadd(ll.Constant(type(x),0),x,name=label),#затычка
+            "-": lambda x,label='': irbuilder.fneg (x,name=label),#целочисленное
+        }
         operand=llvm_eval(self.in_ports[0],irbuilder)
         operator=self.operator
-        res=operator_map[operator](operand)
+        if isinstance(operand.type,ll.IntType):
+            res=int_operator_map[operator](operand)
+        else:
+            if isinstance(operand.type,ll.BaseFloatType):
+                res=float_operator_map[operator](operand)
         self.out_ports[0].value = res

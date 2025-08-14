@@ -3,24 +3,23 @@
 """
 code generator array initialization
 """
+import llvmlite.ir as ll
 
+# import llvmlite.binding as llvm
 from ..node import Node
-from ..cpp.cpp_codegen import CppBlock, cpp_eval, CppVariable
-from ..error import CodeGenError
+from ..llvm.llvm_codegen import llvm_eval
+
+# from ..error import CodeGenError
 
 
 class ArrayInit(Node):
 
-    def to_cpp(self, block: CppBlock):
+    def to_llvm(self, irbuilder):
         # inputs: array, index
 
-        items = [str(cpp_eval(i_p, block)) for i_p in self.in_ports]
+        items = [llvm_eval(i_p, irbuilder) for i_p in self.in_ports]
+        type_ = self.out_ports[0].type.llvm_type(len(items))
 
-        new_var = CppVariable(self.out_ports[0].label
-                              if self.out_ports[0].renamed else "array_init",
-                              self.out_ports[0].type.cpp_type)
+        new_var = ll.Constant(type_, items)
 
-        block.add_variable(new_var)
-
-        block.add_code(f"{new_var} = "  "{" f"{', '.join(items)}" "}" ";")
         self.out_ports[0].value = new_var

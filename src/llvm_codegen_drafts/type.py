@@ -5,7 +5,9 @@ Type for code generator
 """
 import re
 import json
-from .codegen_state import global_no_error
+import llvmlite.ir as ll
+
+# from .codegen_state import global_no_error
 """Type classes have load_from_json_code and save_to_json_code
  methods. They return C++ code for those corresponding purposes
 """
@@ -30,42 +32,42 @@ class Type:
             self.multi_type = type_object["multi_type"]
 
     @property
-    def cpp_type(self):
+    def llvm_type(self):
         if "custom_type" in self.__dict__ and self.custom_type:
-            return self.type_name
+            return self.type_name #TBD
         else:
-            return f"{self.__cpp_type__}"
+            return self.__llvm_type__
 
     @property
     def internal_type(self):
-        return self.__cpp_type__
+        return self.__llvm_type__
 
-    def save_to_json_code(self, target_object, object_):
+    """def save_to_json_code(self, target_object, object_):
         if global_no_error:
-            return f'{target_object} = {object_};'
+            return f"{target_object} = {object_};"
         else:
-            return f'if ({object_}.error) {target_object} = "ERROR"; else {target_object} = {object_};'
+            return f'if ({object_}.error) {target_object} = "ERROR"; else {target_object} = {object_};"""
 
 
 class IntegerType(Type):
-    __cpp_type__ = "integer"
+    __llvm_type__ = ll.IntType(64)
 
-    def load_from_json_code(self, name, src_object):
-        return f"{self.cpp_type} {name} = {src_object}.asInt();"
+    '''def load_from_json_code(self, name, src_object):
+        return f"{self.cpp_type} {name} = {src_object}.asInt();"'''
 
 
 class RealType(Type):
-    __cpp_type__ = "real"
+    __llvm_type__ = ll.DoubleType
 
-    def load_from_json_code(self, name, src_object):
-        return f"{self.cpp_type} {name} = {src_object}.asFloat();"
+    '''def load_from_json_code(self, name, src_object):
+        return f"{self.cpp_type} {name} = {src_object}.asFloat();"'''
 
 
 class BooleanType(Type):
-    __cpp_type__ = "boolean"
+    __llvm_type__ = ll.IntType(1)
 
-    def load_from_json_code(self, name, src_object):
-        return f"{self.cpp_type} {name} = {src_object}.asBool();"
+    '''def load_from_json_code(self, name, src_object):
+        return f"{self.cpp_type} {name} = {src_object}.asBool();"'''
 
 
 def remove_spec_symbols(string):
@@ -74,9 +76,8 @@ def remove_spec_symbols(string):
 
 class ArrayType(Type):
     @property
-    def __cpp_type__(self):
-        return f"Array<{self.element.cpp_type}>"
-
+    def __llvm_type__(self):
+        return lambda count: ll.ArrayType(self.element.llvm_type,count)
     def dimensions(self):
         return 1 + (
             self.element.dimensions if "element" in self.element.__dict__ else 0
@@ -90,7 +91,7 @@ class ArrayType(Type):
             else self.element
         )
 
-    def load_from_json_code(self, name, src_object):
+    """def load_from_json_code(self, name, src_object):
         from .cpp.cpp_codegen import indent_cpp
 
         index_name = "index_for_" + remove_spec_symbols(name)
@@ -118,11 +119,12 @@ class ArrayType(Type):
         item_name = "item_for_" + remove_spec_symbols(target_object)
 
         return (
-            (f"if ({object_}.error)"
-             "{\n"
-             + indent_cpp(f'{target_object}="ERROR";') +
-             "\n}\nelse\n") * (not global_no_error) +
-            f"for(unsigned int {index} = 0;\n"
+            (
+                f"if ({object_}.error)"
+                "{\n" + indent_cpp(f'{target_object}="ERROR";') + "\n}\nelse\n"
+            )
+            * (not global_no_error)
+            + f"for(unsigned int {index} = 0;\n"
             f"    {index} < size({object_});"
             f"\n    ++{index})"
             "\n{\n"
@@ -135,6 +137,7 @@ class ArrayType(Type):
             + indent_cpp(f"{target_object}.append({item_name});")
             + "\n}"
         )
+"""
 
 
 class StreamType(Type):
@@ -152,7 +155,7 @@ class AnyType(Type):
         return "auto"
 
 
-def get_struct_string(name: str, fields: list[str]):
+"""def get_struct_string(name: str, fields: list[str]):
     from .cpp.cpp_codegen import indent_cpp
 
     set_error_code = (
@@ -165,6 +168,7 @@ def get_struct_string(name: str, fields: list[str]):
         [f"{str(type_.cpp_type)} {str(field)};" for field, type_ in fields.items()]
     )
     return "struct " + name + "{\n" + indent_cpp(field_defs + "\n" + extra) + "\n};"
+"""
 
 
 class RecordType(Type):
@@ -173,14 +177,20 @@ class RecordType(Type):
         return self.cpp_type
 
     @property
-    def cpp_type(self):
-        return self.get_struct()["name"]
+    def llvm_type(self):
+        subtypes=[field.type() for field in self.fields.values()]
+        return ll.LiteralStructType(subtypes)
 
     # static, contains description of corresponding C++
     # structs as strings
-    cpp_structs = {}
 
-    def get_struct(self):
+    def names_to_indices(self):
+        names={}
+        for index,field in enumerate(self.fields.keys()):
+            names[field]=index
+        return names
+
+    '''def get_struct(self):
         """returns a C++ struct based on this record"""
 
         if hash(self) not in RecordType.cpp_structs:
@@ -188,6 +198,7 @@ class RecordType(Type):
             struct_str = get_struct_string(name, self.fields)
             RecordType.cpp_structs[hash(self)] = dict(name=name, string=struct_str)
         return RecordType.cpp_structs[hash(self)]
+'''
 
     def __hash__(self):
         return hash(

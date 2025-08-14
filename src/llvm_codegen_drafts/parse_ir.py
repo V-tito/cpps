@@ -4,21 +4,24 @@
 code generator node parsing
 """
 
-from .ast_ import (function,
-                   array_access,
-                   call,
-                   alg,
-                   common,
-                   if_,
-                   let,
-                   literal,
-                   loop,
-                   array_init,
-                   record_access,
-                   record_init)
+from .ast_ import (
+    function,
+    array_access,
+    call,
+    arith,
+    common,
+    if_,
+    let,
+    literal,
+    array_init,
+    # loop,
+    record_access,
+    record_init
+)
 from .node import Node
 from .type import get_type
-from .timeout import process_timeout
+
+# from .timeout import process_timeout
 
 class_map = {
     "Lambda": function.Function,
@@ -28,24 +31,24 @@ class_map = {
     "Then": if_.Branch,
     "Branch": if_.Branch,
     "Condition": if_.Condition,
-    "Binary": alg.Binary,
-    "Unary": alg.Unary,
+    "Binary": arith.Binary,
+    "Unary": arith.Unary,
     "FunctionCall": call.FunctionCall,
     "Literal": literal.Literal,
-    "LoopExpression": loop.LoopExpression,
+    # "LoopExpression": loop.LoopExpression,
     "Init": common.Init,
-    "PreCondition": loop.PreCondition,
-    "PostCondition": loop.PostCondition,
-    "Body": loop.Body,
-    "Returns": loop.Returns,
-    "OldValue": loop.OldValue,
-    "Reduction": loop.Reduction,
+    # "PreCondition": loop.PreCondition,
+    # "PostCondition": loop.PostCondition,
+    # "Body": loop.Body,
+    # "Returns": loop.Returns,
+    # "OldValue": loop.OldValue,
+    # "Reduction": loop.Reduction,
     "ArrayAccess": array_access.ArrayAccess,
     "BuiltInFunctionCall": call.BuiltInFunctionCall,
     "Let": let.Let,
-    "RangeGen": loop.RangeGen,
-    "Range": loop.RangeNumeric,
-    "Scatter": loop.Scatter,
+    # "RangeGen": loop.RangeGen,
+    # "Range": loop.RangeNumeric,
+    # "Scatter": loop.Scatter,
     "ArrayInit": array_init.ArrayInit,
     "RecordInit": record_init.RecordInit,
     "RecordAccess": record_access.RecordAccess,
@@ -70,6 +73,6 @@ def parse_ir(ir_data):
         for def_ in ir_data["definitions"]:
             definitions[def_["name"]] = get_type(def_["type"])
 
-    process_timeout()
+    # process_timeout()
 
     return function.Function.functions, definitions
