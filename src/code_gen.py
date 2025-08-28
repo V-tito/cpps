@@ -24,6 +24,25 @@ def compile_to_llvm(ir, module_name):
     return str(ir_to_llvm(module_name, functions, definitions))
 
 
+def compile_to_llvm_bitcode(ir, target_triple=None):
+    import llvmlite.binding as llvm
+
+    module = llvm.parse_assembly(ir)
+    llvm.initialize_all_targets()
+    llvm.initialize_all_asmprinters()
+    llvm.initialize_native_target()
+    llvm.initialize_native_asmprinter()
+    if not target_triple:
+        target = llvm.Target.from_default_triple()
+    else:
+        pass
+    target_machine = target.create_target_machine()
+    engine = llvm.create_mcjit_compiler(module, target_machine)
+    engine.finalize_object()
+    engine.run_static_constructors()
+    return module.as_bitcode()
+
+
 def main(args):
     """The main function"""
     # check if there is piped-in input_text
@@ -43,13 +62,13 @@ def main(args):
         input_text = get_piped_input()
         ir_ = load_json(input_text)
         module_name = "piped_input"
-    from codegen.parse_ir import parse_ir
+    # from codegen.parse_ir import parse_ir
 
-    functions = parse_ir(ir_)
+    # functions = parse_ir(ir_)
     # TODO parse definitions also
-    from codegen.cpp.ir_to_cpp import ir_to_cpp
+    # from codegen.cpp.ir_to_cpp import ir_to_cpp
 
-    print(compile_ir(module_name, functions))
+    print(compile_ir(ir_, module_name))
 
     return 0
 

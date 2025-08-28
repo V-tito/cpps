@@ -34,7 +34,7 @@ class Type:
     @property
     def llvm_type(self):
         if "custom_type" in self.__dict__ and self.custom_type:
-            return self.type_name #TBD
+            return self.type_name  # TBD
         else:
             return self.__llvm_type__
 
@@ -57,7 +57,7 @@ class IntegerType(Type):
 
 
 class RealType(Type):
-    __llvm_type__ = ll.DoubleType
+    __llvm_type__ = ll.DoubleType()
 
     '''def load_from_json_code(self, name, src_object):
         return f"{self.cpp_type} {name} = {src_object}.asFloat();"'''
@@ -75,9 +75,13 @@ def remove_spec_symbols(string):
 
 
 class ArrayType(Type):
+
     @property
     def __llvm_type__(self):
-        return lambda count: ll.ArrayType(self.element.llvm_type,count)
+        return ll.ArrayType(self.element.llvm_type, self.count)
+
+    # def llvm_type(self):
+
     def dimensions(self):
         return 1 + (
             self.element.dimensions if "element" in self.element.__dict__ else 0
@@ -90,6 +94,8 @@ class ArrayType(Type):
             if type(self.element) == ArrayType
             else self.element
         )
+
+    count = 0  # default element count todo determine by optimizer
 
     """def load_from_json_code(self, name, src_object):
         from .cpp.cpp_codegen import indent_cpp
@@ -173,21 +179,21 @@ class AnyType(Type):
 
 class RecordType(Type):
     @property
-    def __cpp_type__(self):
-        return self.cpp_type
+    def __llvm_type__(self):
+        return self.llvm_type
 
     @property
     def llvm_type(self):
-        subtypes=[field.type() for field in self.fields.values()]
+        subtypes = [field.type() for field in self.fields.values()]
         return ll.LiteralStructType(subtypes)
 
     # static, contains description of corresponding C++
     # structs as strings
 
     def names_to_indices(self):
-        names={}
-        for index,field in enumerate(self.fields.keys()):
-            names[field]=index
+        names = {}
+        for index, field in enumerate(self.fields.keys()):
+            names[field] = index
         return names
 
     '''def get_struct(self):

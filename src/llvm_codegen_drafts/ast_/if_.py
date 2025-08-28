@@ -16,24 +16,18 @@ class If(Node):
     @to_llvm_method
     def to_llvm(self, irbuilder: ll.IRBuilder):
 
-        if_results = []
-
         BranchCount.count += 1  # надо инкапсуляцию
 
-        follower = irbuilder.append_basic_block(name=f"If{BranchCount.count}follower")
-
-        for _, o_p in enumerate(self.out_ports):
-            if_result = irbuilder.alloca(self.o_p.type.llvm_type, name=o_p.label)
-            if_results.append(if_result)
-            o_p.value = if_result
-
         cond_blocks = self.condition.to_llvm(self, irbuilder)
-
+        follower = irbuilder.append_basic_block(name=f"If{BranchCount.count}follower")
         # evaluate branches:
         for o_p in self.out_ports:
+            irbuilder.position_at_end(follower)
+            o_p.value = irbuilder.phi(o_p.type.llvm_type)
             for index, then_block in enumerate(cond_blocks):
-                irbuilder.goto_block(then_block)
+                irbuilder.position_at_start(then_block)
                 self.branches[index].to_llvm(self, o_p, irbuilder, follower)
+        irbuilder.position_at_end(follower)
 
 
 class Branch(Node):
@@ -41,14 +35,14 @@ class Branch(Node):
         for i_p, p_ip in zip(self.in_ports, parent_if.in_ports):
             i_p.value = p_ip.value
 
-            irbuilder.store(
-                result_port.value, llvm_eval(self.out_ports[result_port.index])
+            result_port.value.add_incoming(
+                llvm_eval(self.out_ports[result_port.index], irbuilder), irbuilder.block
             )
             irbuilder.branch(follower)
 
 
 class Condition(Node):
-    def to_llvm(self, parent_if, irbuilder):
+    def to_llvm(self, parent_if, irbuilder: ll.IRBuilder):
 
         branches = []
 
@@ -64,7 +58,7 @@ class Condition(Node):
                 name=f"If{BranchCount.count}false{condition_index}"
             )
             irbuilder.cbranch(cond_result, truebr, falsebr)
-            irbuilder.goto_block(falsebr)
+            irbuilder.position_at_start(falsebr)
             branches.append(truebr)
         branches.append(irbuilder.block)
 

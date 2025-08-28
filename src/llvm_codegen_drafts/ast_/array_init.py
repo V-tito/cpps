@@ -14,12 +14,18 @@ from ..llvm.llvm_codegen import llvm_eval
 
 class ArrayInit(Node):
 
-    def to_llvm(self, irbuilder):
+    def to_llvm(self, irbuilder: ll.IRBuilder):
         # inputs: array, index
 
         items = [llvm_eval(i_p, irbuilder) for i_p in self.in_ports]
-        type_ = self.out_ports[0].type.llvm_type(len(items))
+        type_ = self.out_ports[0].type.llvm_type
+        ptr = irbuilder.alloca(type_)
+        # type_.count = len(items)
+        for index, item in enumerate(items):
+            indexIR = ll.Constant(ll.IntType(64), index)
+            target = irbuilder.gep(ptr, [ll.Constant(ll.IntType(64), 0), indexIR])
+            irbuilder.store(item, target)
 
-        new_var = ll.Constant(type_, items)
+        new_var = irbuilder.load(ptr)
 
         self.out_ports[0].value = new_var

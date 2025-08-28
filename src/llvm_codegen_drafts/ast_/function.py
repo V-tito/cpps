@@ -136,11 +136,10 @@ class Function(Node):
     def to_llvm(self, irbuilder: ll.IRBuilder):
         # reset variable index:
         # CppVariable.variable_index = {}
-
+        args = [port.type.llvm_type for port in self.in_ports]
         # collect ir types corresponding to return types in a list:
-        ret_types = [port.type.llvm_type() for port in self.out_ports]
+        ret_types = [port.type.llvm_type for port in self.out_ports]
         # same for arg types
-        args = [port.type.llvm_type() for port in self.in_ports]
 
         # format types for llvmlite
         if len(ret_types) == 0:
@@ -150,10 +149,6 @@ class Function(Node):
                 ret_type = ret_types[0]
             else:
                 ret_type = ll.LiteralStructType(ret_types)
-        if len(args) == 0:
-            args = None
-        if len(args) == 1:
-            args = args[0]
 
         # make a corresponding function type
 
@@ -161,12 +156,12 @@ class Function(Node):
 
         # choose an appropriate name for the function (rename main):
 
-        self.ir_function_name = (
-            "sisal_main" if self.function_name == "main" else self.function_name
-        )
-
+        self.ir_function_name = self.function_name
+        """"sisal_main" if self.function_name == "main" else"""
         # make a function object
-        func = ll.Function(irbuilder.module, func_type, self.ir_function_name)
+        func = ll.Function(
+            module=self.module, ftype=func_type, name=self.ir_function_name
+        )
         entry_block = func.append_basic_block(name="entry")
         irbuilder.position_at_start(entry_block)
 
@@ -177,15 +172,18 @@ class Function(Node):
         # evaluate function output values (results):
         ret_vals = []
         for index, o_p in enumerate(self.out_ports):
-            llvm_eval(
-                o_p,
-                irbuilder,
-            )
+            llvm_eval(o_p, irbuilder)
             ret_vals.append(o_p.value)
         if len(ret_vals) == 1:
-            ret_val = ll.Constant(ret_type, ret_vals[0])
+            ret_val = ret_vals[0]
         else:
-            ret_val = ll.Constant(ret_type, ret_vals)
+            zero = ll.Constant(ll.IntType(64), 0)
+            ptr = irbuilder.alloca(ret_type)
+            for index, val in enumerate(ret_vals):
+                indexIR = ll.Constant(ll.IntType(64), index)
+                target = irbuilder.gep(ptr, [zero, indexIR])
+                irbuilder.store(val, target)
+            ret_val = irbuilder.load(ptr)
         irbuilder.ret(ret_val)
 
         # check if we requested time_out (time limiting) and process that:

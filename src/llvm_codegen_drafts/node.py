@@ -6,25 +6,24 @@ code generator node (mostly deserealizing code)
 from .port import Port
 from .type import get_type
 from .edge import Edge
-from .llvm.llvm_codegen import llvm_eval #тут будет llvm_eval
+from .llvm.llvm_codegen import llvm_eval  # тут будет llvm_eval
 
 
 def get_node(node_id):
     return Node.node_index[node_id]
 
 
-def to_llvm_method(fn): #это хер знает что, пока не трогаем
-    def wrapped(self, block):
-        if (hasattr(self, "name_child_output_values") and
-           self.name_child_output_values):
+def to_llvm_method(fn):  # это хер знает что, пока не трогаем
+    def wrapped(self, irbuilder):
+        if hasattr(self, "name_child_output_values") and self.name_child_output_values:
 
             # label the ports:
             for index, o_p in enumerate(self.out_ports):
                 src_port = Edge.edge_to[o_p.id].from_
                 if src_port.node.name != "Lambda":
-                    src_port.label = (self.result_name +
-                                  (str(index) if len(self.out_ports) > 1
-                                   else ""))
+                    src_port.label = self.result_name + (
+                        str(index) if len(self.out_ports) > 1 else ""
+                    )
 
             for o_p in self.out_ports:
                 if not o_p.label:
@@ -33,14 +32,11 @@ def to_llvm_method(fn): #это хер знает что, пока не трог
                     else:
                         o_p.label = self.__class__.__name__ + str(o_p.index)
 
-        if (
-            hasattr(self, "copy_parent_input_values")
-            and self.copy_parent_input_values
-        ):
+        if hasattr(self, "copy_parent_input_values") and self.copy_parent_input_values:
             for i_p in self.in_ports:
-                llvm_eval(i_p, block)
+                llvm_eval(i_p, irbuilder)
 
-        return fn(self, block)
+        return fn(self, irbuilder)
 
     return wrapped
 
@@ -70,16 +66,20 @@ class Node:
         if not hasattr(node, "pragma_group"):
             return [node]
 
-        return [n for _, n in Node.node_index.items()
-                if hasattr(n, "pragma_group")
-                and n.pragma_group == node.pragma_group]
+        return [
+            n
+            for _, n in Node.node_index.items()
+            if hasattr(n, "pragma_group") and n.pragma_group == node.pragma_group
+        ]
 
     def get_group(group_index):
-        return [node for _, node in Node.node_index.items()
-                if hasattr(node, "pragma_group")
-                and node.pragma_group == group_index]
+        return [
+            node
+            for _, node in Node.node_index.items()
+            if hasattr(node, "pragma_group") and node.pragma_group == group_index
+        ]
 
-    def get_parent_node(self): 
+    def get_parent_node(self):
         for name, node in Node.node_index.items():
             if hasattr(node, "nodes") and self in node.nodes:
                 return node
@@ -90,9 +90,11 @@ class Node:
                         return br
 
             for sub_node in ["init", "body", "condition", "range_gen", "returns"]:
-                if (hasattr(node, sub_node) and
-                   hasattr(node.__dict__[sub_node], "nodes") and
-                   self in node.__dict__[sub_node].nodes):
+                if (
+                    hasattr(node, sub_node)
+                    and hasattr(node.__dict__[sub_node], "nodes")
+                    and self in node.__dict__[sub_node].nodes
+                ):
                     return sub_node
 
         return None
@@ -116,19 +118,19 @@ class Node:
             get_type(port["type"]),  # chooses an appropriate class
             port["index"],
             port["label"] if "label" in port else None,
-            in_port
+            in_port,
         )
 
     def parse_ports(self, in_ports, out_ports):
         if in_ports:
-            self.in_ports = [self.parse_port(port, in_port=True)
-                             for port in in_ports]
+            self.in_ports = [self.parse_port(port, in_port=True) for port in in_ports]
         else:
             self.in_ports = []
 
         if out_ports:
-            self.out_ports = [self.parse_port(port, in_port=False)
-                              for port in out_ports]
+            self.out_ports = [
+                self.parse_port(port, in_port=False) for port in out_ports
+            ]
         else:
             self.out_ports = []
 
@@ -199,12 +201,10 @@ class Node:
         )
 
         if "nodes" in data:
-            self.nodes = [Node.class_map[node["name"]](node)
-                          for node in data["nodes"]]
+            self.nodes = [Node.class_map[node["name"]](node) for node in data["nodes"]]
 
         if "branches" in data:
-            self.branches = [Node.class_map["Branch"](br)
-                             for br in data["branches"]]
+            self.branches = [Node.class_map["Branch"](br) for br in data["branches"]]
 
         # sisal-cl IRs only:
         if "results" in data:
@@ -217,7 +217,9 @@ class Node:
                 self.in_ports[index].label = result[0]
 
         if self.name == "Let":
-            from .ast_.let import LetBody #прикольно, есть чувство, что и это надо копировать
+            from .ast_.let import (
+                LetBody,
+            )  # прикольно, есть чувство, что и это надо копировать
 
             self.body = LetBody(data["body"])
             del data["body"]
@@ -226,8 +228,16 @@ class Node:
             if isinstance(value, dict):
                 if "name" in value and value["name"] in self.class_map:
                     self.__dict__[field] = self.class_map[value["name"]](value)
-            elif field in ["value", "operator", "function_name",
-                           "callee", "field", "pragmas", "pragma_group", "port_to_name_index"]:
+            elif field in [
+                "value",
+                "operator",
+                "function_name",
+                "callee",
+                "field",
+                "pragmas",
+                "pragma_group",
+                "port_to_name_index",
+            ]:
                 self.__dict__[field] = value
 
         if "edges" in data:
@@ -240,9 +250,9 @@ class Node:
         self.read_data(data)
 
     def trace_back(self):
-        '''Finds all chains (nodes and edges) leading to this node's inputs.
-           Returns the Nodes and all involved Edges.
-        '''
+        """Finds all chains (nodes and edges) leading to this node's inputs.
+        Returns the Nodes and all involved Edges.
+        """
         internal_edges = []
         input_edges = []
         nodes = [self]
