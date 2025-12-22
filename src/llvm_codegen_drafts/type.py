@@ -6,6 +6,7 @@ Type for code generator
 import re
 import json
 import llvmlite.ir as ll
+from ctypes import *
 
 # from .codegen_state import global_no_error
 """Type classes have load_from_json_code and save_to_json_code
@@ -42,6 +43,12 @@ class Type:
     def internal_type(self):
         return self.__llvm_type__
 
+    def to_ctype(self, value):
+        self.ctype(value)
+
+    def ctype(self):
+        return self.ctype
+
     """def save_to_json_code(self, target_object, object_):
         if global_no_error:
             return f"{target_object} = {object_};"
@@ -51,6 +58,7 @@ class Type:
 
 class IntegerType(Type):
     __llvm_type__ = ll.IntType(64)
+    ctype = c_int64
 
     '''def load_from_json_code(self, name, src_object):
         return f"{self.cpp_type} {name} = {src_object}.asInt();"'''
@@ -58,6 +66,7 @@ class IntegerType(Type):
 
 class RealType(Type):
     __llvm_type__ = ll.DoubleType()
+    ctype = c_double
 
     '''def load_from_json_code(self, name, src_object):
         return f"{self.cpp_type} {name} = {src_object}.asFloat();"'''
@@ -65,7 +74,7 @@ class RealType(Type):
 
 class BooleanType(Type):
     __llvm_type__ = ll.IntType(1)
-
+    ctype = c_bool
     '''def load_from_json_code(self, name, src_object):
         return f"{self.cpp_type} {name} = {src_object}.asBool();"'''
 
@@ -75,12 +84,18 @@ def remove_spec_symbols(string):
 
 
 class ArrayType(Type):
+    count = 0  # default element count todo determine by optimizer
 
-    @property
-    def __llvm_type__(self):
-        return ll.ArrayType(self.element.llvm_type, self.count)
+    def __init__(self, type_object):
+        super().__init__(type_object)
+        self.__llvm_type__ = ll.ArrayType(self.element.llvm_type, self.count)
+        self.ctype = self.element.ctype * 64
 
-    # def llvm_type(self):
+    def to_ctype(self, values):
+        ctype = self.element.ctype * 64
+        values_formatted = (self.element.to_ctype(value) for value in values)
+        res = ctype(values_formatted)
+        return res
 
     def dimensions(self):
         return 1 + (
@@ -94,8 +109,6 @@ class ArrayType(Type):
             if type(self.element) == ArrayType
             else self.element
         )
-
-    count = 0  # default element count todo determine by optimizer
 
     """def load_from_json_code(self, name, src_object):
         from .cpp.cpp_codegen import indent_cpp
@@ -178,14 +191,13 @@ class AnyType(Type):
 
 
 class RecordType(Type):
-    @property
-    def __llvm_type__(self):
-        return self.llvm_type
+    def __init__(self, type_object):
+        super().__init__(type_object)
+        self.__llvm_type__ = ll.LiteralStructType(
+            [field.type.llvm_type() for field in self.fields.values()]
+        )
 
-    @property
-    def llvm_type(self):
-        subtypes = [field.type() for field in self.fields.values()]
-        return ll.LiteralStructType(subtypes)
+    ctypes_count = 0
 
     # static, contains description of corresponding C++
     # structs as strings
@@ -196,6 +208,30 @@ class RecordType(Type):
             names[field] = index
         return names
 
+    @classmethod
+    def make_ctypes_struct(cls, fields: list):
+        class Struct(Structure):
+            _fields_ = fields
+
+        Struct.__name__ = "record" + str(cls.ctypes_count)
+        cls.ctypes_count += 1  # TODO utilize hash&cpp stuff
+        return Struct
+
+    def to_ctype(self, value: dict):
+        ctyped_items = []
+        for key, type_ in self.fields.items():
+            ctyped_items.append(type_.to_ctype(value[key]))
+        ctype = self.ctype()
+        res = ctype(*ctyped_items)
+        return res
+
+    def ctype(self):
+        types = []
+        for key, type_ in self.fields.items():
+            types.append((key, type_.ctype))
+        res = RecordType.make_ctypes_struct(types)
+        return res
+
     '''def get_struct(self):
         """returns a C++ struct based on this record"""
 
@@ -204,15 +240,9 @@ class RecordType(Type):
             struct_str = get_struct_string(name, self.fields)
             RecordType.cpp_structs[hash(self)] = dict(name=name, string=struct_str)
         return RecordType.cpp_structs[hash(self)]
-'''
 
-    def __hash__(self):
-        return hash(
-            json.dumps(
-                {type_.cpp_type: name for name, type_ in self.fields.items()},
-                sort_keys=True,
-            )
-        )
+
+    
 
     # declare struct and put it on the list "bool" if global_no_error else
     # use it as type
@@ -243,7 +273,7 @@ class RecordType(Type):
                 )
                 for field, type_ in self.fields.items()
             ]
-        )
+        )'''
 
 
 type_map = {

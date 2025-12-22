@@ -113,9 +113,19 @@ def main(args):
                     if "--bitcode" in args:
                         from code_gen import compile_to_llvm_bitcode
 
-                        return compile_to_llvm_bitcode(llvm_src)
+                        return compile_to_llvm_bitcode(llvm_src, module_name)
                     else:
-                        print(str(llvm_src))
+                        if "--llvmlitejit" in args:
+                            from code_gen import run_via_llvmlite
+
+                            internal_args = json.loads(input("args as JSON:"))
+                            return run_via_llvmlite(
+                                llvm_src, module_name, args=internal_args
+                            )
+                            # todo how to read n write args. ret lambda?
+                            # possibly would be eliminated later as adding read/write functions to ir seems more in tune with the current design
+                        else:
+                            print(str(llvm_src))
             except Exception as e:
                 if debug_enabled():
                     raise (e)

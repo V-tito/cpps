@@ -117,9 +117,11 @@ class Function(Node):
             if len(ret_types) == 1
             else "tuple<" + ", ".join([type_.cpp_type for type_ in ret_types]) + ">"
         )
-        cpp_function_name = (
-            "sisal_main" if self.function_name == "main" else self.function_name
-        )
+        cpp_function_name = self.function_name
+        # (
+        # "sisal_main" if self.function_name == "main" else
+
+        # )
         arg_str = ", ".join([port.value.definition_str() for port in self.in_ports])
 
         return f"{ret_type_str} {cpp_function_name}({arg_str});"
@@ -134,13 +136,10 @@ class Function(Node):
 
     @to_llvm_method
     def to_llvm(self, irbuilder: ll.IRBuilder):
-        # reset variable index:
-        # CppVariable.variable_index = {}
+        # collect ir types corresponding to arg types in a list:
         args = [port.type.llvm_type for port in self.in_ports]
         # collect ir types corresponding to return types in a list:
         ret_types = [port.type.llvm_type for port in self.out_ports]
-        # same for arg types
-
         # format types for llvmlite
         if len(ret_types) == 0:
             ret_type = ll.VoidType()
@@ -149,22 +148,27 @@ class Function(Node):
                 ret_type = ret_types[0]
             else:
                 ret_type = ll.LiteralStructType(ret_types)
-
         # make a corresponding function type
-
         func_type = ll.FunctionType(ret_type, args)
 
-        # choose an appropriate name for the function (rename main):
-
+        # choose an appropriate name for the function (renaming main might be needed if end up adding default input-output function):
         self.ir_function_name = self.function_name
-        """"sisal_main" if self.function_name == "main" else"""
+        # (            "sisal_main" if self.function_name == "main" else         )
+
         # make a function object
         func = ll.Function(
             module=self.module, ftype=func_type, name=self.ir_function_name
         )
         entry_block = func.append_basic_block(name="entry")
         irbuilder.position_at_start(entry_block)
-
+        # save datatypes for later use in jit call (to do move to sep method with other main-exclusive processing)
+        if self.function_name == "main":
+            irbuilder.module.set_inputs(
+                {port.label: port.type for port in self.in_ports}
+            )
+            irbuilder.module.set_output(
+                {port.label: port.type for port in self.out_ports}
+            )
         # assign arguments to temp vars:
         for port, arg in zip(self.in_ports, func.args):
             port.value = arg
@@ -192,70 +196,69 @@ class Function(Node):
         return func
 
 
-def create_main():
-    """Creates a C++ main(...) that loads JSON input data from stdin
-    and outputs data as JSON to stdout.
-    """
+"""def create_main(irbuilder: ll.IRBuilder):
+    # accepts data from console (no structs or arrays for the time being)
+    # and provides console output
     if "main" not in Function.functions:
         raise CodeGenError("Module must contain main-function.")
-    main = Function.functions["main"]
-
-    body = "Json::Value root;\n" "std::cin >> root;\n" "Json::Value json_result;\n"
-
-    # check if needed values are passed to the program:
-
-    for port in main.in_ports:
-        body += f'CHECK_INPUT_ARGUMENT("{port.value.name}");\n'
-
-    # add code that loads values from input JSON
-
-    body += (
-        "\n".join(
-            [
-                port.value.get_load_from_json_code(f'root["{port.value.name}"]') + ""
-                for port in main.in_ports
-            ]
-        )
-        + "\n"
-    )
-
-    args = ", ".join([str(port.value) for port in main.in_ports])
-
-    time_out = main.get_pragma("max_time")
-    if time_out:
-        '''class_object_name, added_code = time_limited_execution_cpp(main, args)
-        body += added_code + "\n"'''
-        sisal_main_call = """class_object_name""" """+""" ".retval"
-    else:
-        sisal_main_call = "sisal_main(" + args + ")"
-
-    #  sisal_main_result = main.
-
-    if main.num_outputs == 1:
-        body += f"{main.ret_cpp_type} main_result = " + sisal_main_call + ";\n"
-        body += main.out_ports[0].type.save_to_json_code(
-            'json_result["port0"]', "main_result"
-        )
-    else:
-
-        body += f"{main.ret_cpp_type} main_result = " + sisal_main_call + ";\n"
-        for index, o_p in enumerate(main.out_ports):
-            body += (
-                o_p.type.save_to_json_code(
-                    f'json_result["port{index}"]', f"get<{index}>(main_result)"
-                )
-                + "\n"
+    main_ir = Function.functions["main"]
+    main_ib = irbuilder.module.get_global("sisal_main")
+    main_type = ll.FunctionType(ll.VoidType, [])
+    main = ll.Function(irbuilder.module, main_type, "main")
+    block = main.append_basic_block
+    irbuilder.position_at_start(block)
+    args = main.args()
+    input_str_type = lambda len: ll.ArrayType(ll.IntType(8), len)
+    scanf_types = {
+        "int_input": ll.GlobalVariable(irbuilder.module, input_str_type(3)),
+        "lint_input": ll.GlobalVariable(irbuilder.module, input_str_type(4)),
+        "llint_input": ll.GlobalVariable(irbuilder.module, input_str_type(5)),
+        "float_input": ll.GlobalVariable(irbuilder.module, input_str_type(3)),
+        "char_input": ll.GlobalVariable(irbuilder.module, input_str_type(3)),
+        "str_input": ll.GlobalVariable(irbuilder.module, input_str_type(3)),
+    }
+    scanf_types["int_input"].initializer = ll.Constant(input_str_type(3), "%d\00")
+    scanf_types["lint_input"].initializer = ll.Constant(input_str_type(4), "%ld\00")
+    scanf_types["llint_input"].initializer = ll.Constant(input_str_type(5), "%lld\00")
+    scanf_types["float_input"].initializer = ll.Constant(input_str_type(3), "%f\00")
+    scanf_types["char_input"].initializer = ll.Constant(input_str_type(3), "%c\00")
+    scanf_types["str_input"].initializer = ll.Constant(input_str_type(3), "%s\00")
+    scanf_inputs = {
+        "int_input": ll.GlobalVariable(irbuilder.module, ll.IntType(64)),
+        "float_input": ll.GlobalVariable(irbuilder.module, ll.DoubleType),
+    }
+    argvals = []
+    for arg in args:
+        typ = type(arg)
+        typname = ""
+        if isinstance(typ, ll.IntType):
+            typname = "int_input"
+        else:
+            if isinstance(typ, ll.DoubleType):
+                typname = "float_input"
+        if not irbuilder.module.get_global(typname):
+            irbuilder.module.add_global(scanf_types[typname])
+            scanf_type = ll.FunctionType(
+                ll.IntType(32), [ll.PointerType()], var_arg=True
             )
-
-    result_output_code = (
-        'std::cout << json_result << "\\n";\n' "std::cout << std::endl;"
-    )
-
-    return (
-        "int main(int argc, char **argv)\n"
-        '''"{\n"
-        f"{indent_cpp(body)}\n"
-        f"{indent_cpp(result_output_code)}\n"
-        f"{indent_cpp('return 0;')}"
-        "\n}"'''
-    )
+            scanf = ll.Function(module=irbuilder.module, ftype=scanf_type, name="scanf")
+            irbuilder.call(scanf, [scanf_types[typname], scanf_inputs[typname]])
+            argval = irbuilder.load(scanf_inputs[typname])
+            argvals.append(argval)
+        # установить тип инта по умолчанию и делать trunc/extend инпута
+        res = irbuilder.call(main_ib, argvals)
+        printf = ll.Function(
+            irbuilder.module,
+            ll.FunctionType(ll.IntType(32), ll.PointerType(), var_arg=True),
+        )
+        # перенести типы для принта/скана в местный тип
+        # и билдить вот это параллельно с sisal_main
+        # тем более что у нас есть main_ir
+        typ = type(type(main_ib).return_type)
+        typname = ""
+        if isinstance(typ, ll.IntType):
+            typname = "int_input"
+        else:
+            if isinstance(typ, ll.DoubleType):
+                typname = "float_input"
+        irbuilder.call(printf, [scanf_inputs[typname], res])"""

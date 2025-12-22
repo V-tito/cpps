@@ -1,6 +1,7 @@
 {
     "version": "0.2.0",
     "configurations": [
+
         
         {
             "name": "Python Debugger: Sisal.py with Arguments",
@@ -8,7 +9,7 @@
             "request": "launch",
             "program": "/home/newt/Рабочий стол/cpps/src/sisal.py",
             "console": "integratedTerminal",
-            "args": ["-i","/home/newt/Рабочий стол/cpps/examples/array2.sis", "--llvm","--bitcode"],
+            "args": ["-i","/home/newt/Рабочий стол/cpps/examples/array.sis", "--llvm","--llvmlitejit"],
             "justMyCode": false
         }
     ]

@@ -21,26 +21,20 @@ def compile_to_llvm(ir, module_name):
     from llvm_codegen_drafts.llvm.ir_to_llvm import ir_to_llvm
 
     functions, definitions = parse_ir(load_json(ir))
-    return str(ir_to_llvm(module_name, functions, definitions))
+    return ir_to_llvm(module_name, functions, definitions)
 
 
-def compile_to_llvm_bitcode(ir, target_triple=None):
-    import llvmlite.binding as llvm
+def compile_to_llvm_bitcode(ir, module_name="", target_triple=None):
+    from llvm_codegen_drafts.llvm.ir_to_llvm import ir_to_bitcode
 
-    module = llvm.parse_assembly(ir)
-    llvm.initialize_all_targets()
-    llvm.initialize_all_asmprinters()
-    llvm.initialize_native_target()
-    llvm.initialize_native_asmprinter()
-    if not target_triple:
-        target = llvm.Target.from_default_triple()
-    else:
-        pass
-    target_machine = target.create_target_machine()
-    engine = llvm.create_mcjit_compiler(module, target_machine)
-    engine.finalize_object()
-    engine.run_static_constructors()
-    return module.as_bitcode()
+    res, _ = ir_to_bitcode(ir, target_triple)
+    return res
+
+
+def run_via_llvmlite(ir, module_name="", target_triple=None, args={}):
+    from llvm_codegen_drafts.llvm.ir_to_llvm import run_through_llvmlite
+
+    return run_through_llvmlite(ir, args)
 
 
 def main(args):
