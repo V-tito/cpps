@@ -18,9 +18,10 @@ class ArrayInit(Node):
         # inputs: array, index
 
         items = [llvm_eval(i_p, irbuilder) for i_p in self.in_ports]
-        type_ = self.out_ports[0].type.llvm_type
-        ptr = irbuilder.alloca(type_)
-        # type_.count = len(items)
+        type_ = self.out_ports[0].type
+        type_.count = len(items)
+        ptr = irbuilder.alloca(type_.llvm_type())
+        #
         for index, item in enumerate(items):
             indexIR = ll.Constant(ll.IntType(64), index)
             target = irbuilder.gep(ptr, [ll.Constant(ll.IntType(64), 0), indexIR])
