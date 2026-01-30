@@ -1,7 +1,5 @@
 import llvmlite.ir as ll
 import llvmlite.binding as llvm
-
-# import llvmlite.binding as llvm
 from ..edge import Edge
 
 

@@ -23,7 +23,7 @@ class If(Node):
         # evaluate branches:
         for o_p in self.out_ports:
             irbuilder.position_at_end(follower)
-            o_p.value = irbuilder.phi(o_p.type.llvm_type)
+            o_p.value = irbuilder.phi(o_p.type.llvm_type, name=o_p.label)
             for index, then_block in enumerate(cond_blocks):
                 irbuilder.position_at_start(then_block)
                 self.branches[index].to_llvm(self, o_p, irbuilder, follower)
