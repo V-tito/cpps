@@ -61,10 +61,8 @@ class Binary(Node):
         left = llvm_eval(self.in_ports[0], irbuilder)
         right = llvm_eval(self.in_ports[1], irbuilder)
         operator = self.operator  # есть же у binary такое поле?
-        type_left = left.type
-        type_right = right.type
-        isintl = isinstance(type_left, ll.IntType)
-        isintr = isinstance(type_right, ll.IntType)
+        isintl = isinstance(left.type, ll.IntType)
+        isintr = isinstance(right.type, ll.IntType)
 
         if self.out_ports[0].label:
             label = self.out_ports[0].label
@@ -75,11 +73,16 @@ class Binary(Node):
             res = int_operator_map[operator](left, right, label)
         else:
             if isintl:
-                left = irbuilder.sitofp(left, ll.DoubleType)
+                print(isinstance(ll.types.DoubleType(), ll.types.Type))
+                left = irbuilder.sitofp(left, typ=ll.DoubleType())
             if isintr:
                 right = irbuilder.sitofp(right, ll.DoubleType)
-            isfl = isinstance(type_left, ll.BaseFloatType)
-            isfr = isinstance(type_right, ll.BaseFloatType)
+            isfl = (isinstance(left.type, ll.FloatType)) | (
+                isinstance(left.type, ll.DoubleType)
+            )
+            isfr = (isinstance(right.type, ll.FloatType)) | (
+                isinstance(right.type, ll.DoubleType)
+            )
             if isfl and isfr:
                 res = float_operator_map[operator](
                     left, right, label
@@ -109,6 +112,8 @@ class Unary(Node):
         if isinstance(operand.type, ll.IntType):
             res = int_operator_map[operator](operand)
         else:
-            if isinstance(operand.type, ll.BaseFloatType):
+            if (isinstance(operand.type, ll.FloatType)) | (
+                isinstance(operand.type, ll.DoubleType)
+            ):
                 res = float_operator_map[operator](operand)
         self.out_ports[0].value = res

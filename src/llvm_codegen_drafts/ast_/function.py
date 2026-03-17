@@ -6,7 +6,7 @@ code generator function
 
 
 from ..node import Node, to_llvm_method
-from ..llvm.llvm_codegen import llvm_eval
+from ..llvm.llvm_codegen import llvm_eval, LlModule
 from ..error import CodeGenError
 
 # from ..cpp import template
@@ -137,9 +137,9 @@ class Function(Node):
     @to_llvm_method
     def to_llvm(self, irbuilder: ll.IRBuilder):
         # collect ir types corresponding to arg types in a list:
-        args = [port.type.llvm_type for port in self.in_ports]
+        args = [port.type.llvm_type() for port in self.in_ports]
         # collect ir types corresponding to return types in a list:
-        ret_types = [port.type.llvm_type for port in self.out_ports]
+        ret_types = [port.type.llvm_type() for port in self.out_ports]
         # format types for llvmlite
         if len(ret_types) == 0:
             ret_type = ll.VoidType()
@@ -154,7 +154,6 @@ class Function(Node):
         # choose an appropriate name for the function (renaming main might be needed if end up adding default input-output function):
         self.ir_function_name = self.function_name
         # (            "sisal_main" if self.function_name == "main" else         )
-
         # make a function object
         func = ll.Function(
             module=self.module, ftype=func_type, name=self.ir_function_name
@@ -181,10 +180,10 @@ class Function(Node):
         if len(ret_vals) == 1:
             ret_val = ret_vals[0]
         else:
-            zero = ll.Constant(ll.IntType(64), 0)
+            zero = ll.Constant(ll.IntType(32), 0)
             ptr = irbuilder.alloca(ret_type)
             for index, val in enumerate(ret_vals):
-                indexIR = ll.Constant(ll.IntType(64), index)
+                indexIR = ll.Constant(ll.IntType(32), index)
                 target = irbuilder.gep(ptr, [zero, indexIR])
                 irbuilder.store(val, target)
             ret_val = irbuilder.load(ptr)

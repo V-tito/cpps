@@ -22,4 +22,4 @@ def run_through_llvmlite(ir: LlModule, args: dict):
             argvals.append(args[var])
         except Exception as e:
             print(e + f"\nVariable {var} not provided")
-    return ir.run_on_jit(args)
+    return ir.run_on_jit(argvals)

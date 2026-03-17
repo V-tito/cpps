@@ -32,7 +32,6 @@ class Type:
             self.element = get_type(type_object["element"])
             self.multi_type = type_object["multi_type"]
 
-    @property
     def llvm_type(self):
         if "custom_type" in self.__dict__ and self.custom_type:
             return self.type_name  # TBD
@@ -44,10 +43,7 @@ class Type:
         return self.__llvm_type__
 
     def to_ctype(self, value):
-        self.ctype(value)
-
-    def ctype(self):
-        return self.ctype
+        return self.ctype(value)
 
     """def save_to_json_code(self, target_object, object_):
         if global_no_error:
@@ -89,17 +85,17 @@ class ArrayType(Type):
     def __init__(self, type_object):
         super().__init__(type_object)
         self.__llvm_type__ = ll.ArrayType(self.element.llvm_type, self.count)
-        self.ctype = self.element.ctype * 64
+        self.ctype = self.element.ctype * self.count
 
     def to_ctype(self, values):
-        ctype = self.element.ctype * 64
+        ctype = self.element.ctype * self.count
         values_formatted = (self.element.to_ctype(value) for value in values)
         res = ctype(values_formatted)
         return res
 
     def dimensions(self):
         return 1 + (
-            self.element.dimensions if "element" in self.element.__dict__ else 0
+            self.element.dimensions() if "element" in self.element.__dict__ else 0
         )
 
     def bottom_element_type(self):
@@ -191,10 +187,19 @@ class AnyType(Type):
 
 
 class RecordType(Type):
+
     def __init__(self, type_object):
+        class WidenedLitStruct(ll.LiteralStructType):
+            def __init__(self, names, elems, packed=False):
+                super().__init__(elems, packed)
+                self.names_to_indices = names
+
         super().__init__(type_object)
-        self.__llvm_type__ = ll.LiteralStructType(
-            [field.type.llvm_type() for field in self.fields.values()]
+        self.__llvm_type__ = WidenedLitStruct(
+            self.names_to_indices, [field.llvm_type() for field in self.fields.values()]
+        )
+        self.ctype = RecordType.make_ctypes_struct(
+            [(key, type_.ctype) for key, type_ in self.fields.items()]
         )
 
     ctypes_count = 0
@@ -213,6 +218,13 @@ class RecordType(Type):
         class Struct(Structure):
             _fields_ = fields
 
+            def __str__(self):
+                res = "{\n"
+                for field in self._fields_:
+                    res += f"{field[0]} : {getattr(self,field[0])} \n"
+                res += "}"
+                return res
+
         Struct.__name__ = "record" + str(cls.ctypes_count)
         cls.ctypes_count += 1  # TODO utilize hash&cpp stuff
         return Struct
@@ -221,15 +233,8 @@ class RecordType(Type):
         ctyped_items = []
         for key, type_ in self.fields.items():
             ctyped_items.append(type_.to_ctype(value[key]))
-        ctype = self.ctype()
+        ctype = self.ctype
         res = ctype(*ctyped_items)
-        return res
-
-    def ctype(self):
-        types = []
-        for key, type_ in self.fields.items():
-            types.append((key, type_.ctype))
-        res = RecordType.make_ctypes_struct(types)
         return res
 
     '''def get_struct(self):

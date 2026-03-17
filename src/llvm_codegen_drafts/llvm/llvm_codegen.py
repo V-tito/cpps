@@ -1,6 +1,7 @@
 import llvmlite.ir as ll
 import llvmlite.binding as llvm
 from ..edge import Edge
+from ..error import CodeGenError
 
 
 # где-то здесь будет определение модуля, вероятно, классом с методом, который будет его инициализировать
@@ -26,13 +27,16 @@ class LlModule(ll.Module):
     def get_input_types(self):
         return self.inputs.values()
 
-    def get_input_ctypes(self):
-        from ctypes import POINTER
-        from ..type import ArrayType
+    def get_input_ctypes(self, args: list):
+        # from ctypes import POINTER
+        from ..type import ArrayType, RecordType
+
+        if len(args) != len(self.inputs.values()):
+            raise CodeGenError("Number of arguments doesn't match")
 
         return [
-            _type.ctype() if type(_type) is not ArrayType else POINTER(_type.ctype())
-            for _type in self.inputs.values()
+            _type.ctype if type(_type) is not ArrayType else _type.to_ctype(arg)
+            for _type, arg in zip(self.inputs.values(), args)
         ]
 
     def get_input_names(self):
@@ -46,10 +50,15 @@ class LlModule(ll.Module):
         if self.output:
             from ..type import RecordType
 
-            ctypes = [(name, _type.ctype) for name, _type in self.output.items()]
-            return RecordType.make_ctypes_struct(fields=ctypes[:])
+            if len(self.output.items()) != 1:
+                ctypes = [(name, _type.ctype) for name, _type in self.output.items()]
+                return RecordType.make_ctypes_struct(fields=ctypes[:])
+            else:
+                out = list(self.output.items())[0][1]
+                outctype = out.ctype
+                return outctype
         else:
-            return self.output
+            return ll.VoidType
 
     def bitcode_gen(self, target_triple=None):
         module = llvm.parse_assembly(str(self))
@@ -76,13 +85,14 @@ class LlModule(ll.Module):
         if not self.engine:
             self.bitcode_gen()
         func_ptr = self.engine.get_function_address("main")
-        out = self.get_output_ctype()
-        inp = self.get_input_ctypes()
-        cfunctup = CFUNCTYPE(out, *inp)
+        out_ = self.get_output_ctype()
+        inp = self.get_input_ctypes(args)
+        cfunctup = CFUNCTYPE(out_, *inp)
         cfunc = cfunctup(func_ptr)
-        args_formatted = (
-            argtype.to_ctype(arg) for arg, argtype in zip(args, self.get_input_types())
-        )
+        args_formatted = []
+        for arg, argtype in zip(args, self.get_input_types()):
+            arg_formatted = argtype.to_ctype(arg)
+            args_formatted.append(arg_formatted)
         res = cfunc(*args_formatted)
         return res
 

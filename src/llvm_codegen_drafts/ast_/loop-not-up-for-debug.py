@@ -3,16 +3,21 @@ from ..llvm.llvm_codegen import llvm_eval
 from ..error import CodeGenError
 from ..edge import get_src_node
 from ..port import copy_port_values, copy_port_labels
+
 # from ..cpp import template
 # from ..codegen_state import global_no_error
 import llvmlite.ir as ll
 
+
 class LoopExpression(Node):
+
+    count = 0
 
     copy_parent_input_values = True
 
     def __init__(self, data):
         super().__init__(data)
+        LoopExpression.count += 1
         self.reduction_values = []
         self.reduction_operators = []
         self.private_vars = []
@@ -42,59 +47,72 @@ class LoopExpression(Node):
 
         # Init's input values are added separately because the class
         # is shared between Loop and Let:
+
         if self.init:
-            copy_port_values(self.in_ports,
-                             self.init.in_ports[-len(self.in_ports):])
+            copy_port_values(self.in_ports, self.init.in_ports[-len(self.in_ports) :])
+            irbuilder.goto_block(self.init_block)
             self.init.to_llvm(irbuilder)
 
         if self.range_gen:
             self.range_gen.to_llvm(irbuilder)
 
         if self.body:
-            copy_port_values(self.get_out_ports_list([self.range_gen,
-                                                      self.init]),
-                             self.body.in_ports)
-            copy_port_values(self.in_ports,
-                             self.body.in_ports[-len(self.in_ports):])
-
-        if self.condition:
-            self.condition.make_loop_block(irbuilder)
+            copy_port_values(
+                self.get_out_ports_list([self.range_gen, self.init]), self.body.in_ports
+            )
+            copy_port_values(self.in_ports, self.body.in_ports[-len(self.in_ports) :])
 
         if self.body:
-            self.body.to_llvm(self.loop_block)
+            self.body.to_llvm(irbuilder)
 
         if self.condition:
-            copy_port_values(self.in_ports,
-                             self.condition.in_ports[-len(self.in_ports):])
-            copy_port_values(self.get_out_ports_list([self.body]),
-                             self.condition.in_ports)
+            copy_port_values(
+                self.in_ports, self.condition.in_ports[-len(self.in_ports) :]
+            )
+            copy_port_values(
+                self.get_out_ports_list([self.body]), self.condition.in_ports
+            )
             self.condition.to_llvm(irbuilder)
 
-        copy_port_values(self.get_out_ports_list([self.body,
-                                                  self.range_gen,
-                                                  self.init]),
-                         self.returns.in_ports)
+        copy_port_values(
+            self.get_out_ports_list([self.body, self.range_gen, self.init]),
+            self.returns.in_ports,
+        )
 
-        copy_port_values(self.in_ports,
-                         self.returns.in_ports[-len(self.in_ports):])
+        copy_port_values(self.in_ports, self.returns.in_ports[-len(self.in_ports) :])
 
     @to_llvm_method
     def to_llvm(self, irbuilder: ll.IRBuilder):
-
+        # create a comment containing names of variables being calculated
+        # in the loop:
+        result_vars_list = ", ".join(port.label for port in self.out_ports)
+        self.predecessor = irbuilder.block
+        self.init_block = irbuilder.append_basic_block(
+            name=f"Loop_{LoopExpression.count}_init"
+        )
+        self.follower = irbuilder.append_basic_block(
+            name=f"Loop_{LoopExpression.count}_follower"
+        )
+        self.loop_body_block = irbuilder.append_basic_block(
+            name=f"Loop_{LoopExpression.count}_body"
+        )
         self.copy_port_values_to_children(irbuilder)
 
         copy_port_labels(self.out_ports, self.returns.out_ports)
 
         # add a reference to current C++ block to eachReduction node
         # within Returns node:
-        self.returns.copy_structure_blocks_to_all_reductions(self.loop_block)
+        self.returns.copy_cpp_blocks_to_all_reductions(
+            self.loop_block, block, self.init_block
+        )
 
-        for o_p, r_o_p in zip(self.out_ports, self. returns.out_ports):
+        for o_p, r_o_p in zip(self.out_ports, self.returns.out_ports):
             # calculate out-ports' values and add variables for
             # them to the C++ block:
-
+            o_p.value = CppVariable(o_p.label, o_p.type.cpp_type)
             o_p_value = llvm_eval(r_o_p, self.loop_block)
-            o_p.value=r_o_p.value
+            block.add_variable(o_p.value)
+            block.add_code(CppAssignment(o_p.value, r_o_p.value))
 
         for var in self.loop_block.variables:
             block.add_variable(var)
@@ -102,119 +120,116 @@ class LoopExpression(Node):
         red_names = ", ".join([r.name for r in self.reduction_values])
         red_ops = ", ".join([str(r) for r in self.reduction_operators])
         if self.reduction_values:
-            priv_names = " private(" + ", ".join([str(p) for p in self.private_vars]) + ")" if self.private_vars else ""
+            priv_names = (
+                " private(" + ", ".join([str(p) for p in self.private_vars]) + ")"
+                if self.private_vars
+                else ""
+            )
             self.pragma_block.add_code(
-                        f"#pragma omp parallel for reduction({red_ops}:{red_names})"# + priv_names
-                    )
+                f"#pragma omp parallel for reduction({red_ops}:{red_names})"  # + priv_names
+            )
         block.add_code(f"// loop end: {result_vars_list}")
+
 
 # copy order in parser:
 # cond:
-        # init , range_gen, body (prepended)
+# init , range_gen, body (prepended)
 # body:
-        # init, range_gen
+# init, range_gen
 # returns:
-        # init, range_gen, body
+# init, range_gen, body
 
 # 0: element, 1: index
 
 
 class Body(Node):
 
-    def to_cpp(self, irbuilder: ll.IRBuilder):
+    def to_llvm(self, irbuilder: ll.IRBuilder):
         self.name_child_ports()
-
-        block_ = CppBlock()
-        block.add_code("// loop body:")
-        block.add_code(block_)
-        block = block_
-
+        irbuilder.position_at_start(self.loop_object.loop_body_block)
 
         for o_p in self.out_ports:
             if o_p.label in [i_p.label for i_p in self.in_ports]:
-                new_value = cpp_eval(o_p, block)
-                o_p.value = next(i_p.value for i_p in self.in_ports if o_p.label == i_p.label)
-                block.add_code(
-                    CppAssignment(o_p.value,
-                                  new_value)
-                    )
+                # TODO where possible? only with old and initial?
+                new_value = llvm_eval(o_p, irbuilder)
+                o_p.value = next(
+                    i_p.value for i_p in self.in_ports if o_p.label == i_p.label
+                )
+                if self.loop_object.latch:
+                    irbuilder.goto_block(self.loop_object.latch)
+                else:
+                    self.loop_object.latch = irbuilder.append_basic_block("latch")
+
+                o_p.value = irbuilder.phi(o_p.value.type, name=o_p.label + ".next")
+                o_p.value.add_incoming(new_value, self.loop_object.init_block)
+                o_p
+                # TODO is strict typing in sisal?
             else:
-                cpp_eval(o_p, block)
+                llvm_eval(o_p, block)
 
             self.loop_object.private_vars += [o_p.value]
 
 
 class Returns(Node):
-
     """Returns node. It is assumed that each output port is always connected
     to a Reduction node inside"""
 
-    def copy_structure_blocks_to_all_reductions(self, loop_body_block):
-        """ copy loop body and overall loop blocks variables
+    def copy_cpp_blocks_to_all_reductions(self, loop_body_block, loop_bock, init_block):
+        """copy loop body and overall loop blocks variables
         to all reduction nodes
         """
         for node in self.nodes:
             if type(node) == Reduction:
                 node.loop_body_block = loop_body_block
+                node.loop_block = loop_bock
+                node.init_block = init_block
 
 
 class Reduction(Node):
 
-    def to_cpp(self, irbuilder: ll.IRBuilder):
-        """ Reduction node. Receives a boolean (1st port),
+    def to_llvm(self, irbuilder: ll.IRBuilder):
+        """Reduction node. Receives a boolean (1st port),
         which is a condition for including a new item,
         determined by value (2nd port)"""
         block_ = CppBlock()
         block_.add_code("// loop reduction:")
         block.add_code(block_)
         block = block_
-        cond = cpp_eval(self.in_ports[0], block)
-        input_value = cpp_eval(self.in_ports[1], block)
+        cond = llvm_eval(self.in_ports[0], block)
+        input_value = llvm_eval(self.in_ports[1], block)
 
-        cond_header = (f"if({cond})""{" if cond != True else "")
-        cond_footer = ("}" if cond != True else "")
+        cond_header = f"if({cond})" "{" if cond != True else ""
+        cond_footer = "}" if cond != True else ""
 
         if self.operator == "array":
 
             reduction_value = CppVariable(
-                              "reduction_array",
-                              f"Array<{self.in_ports[1].type.cpp_type}>")
+                "reduction_array", f"Array<{self.in_ports[1].type.cpp_type}>"
+            )
             self.loop_body_block.add_code(
-                    cond_header +
-                    f"{reduction_value}.push_back({input_value});" +
-                    cond_footer
-                )
+                cond_header
+                + f"{reduction_value}.push_back({input_value});"
+                + cond_footer
+            )
 
         elif self.operator == "value":
-            reduction_value = CppVariable(
-                              "reduction_value",
-                              f"{input_value.type_}")
+            reduction_value = CppVariable("reduction_value", f"{input_value.type_}")
             self.loop_block.add_code(
-                cond_header +
-                f"{reduction_value} = {input_value};" +
-                cond_footer
+                cond_header + f"{reduction_value} = {input_value};" + cond_footer
             )
         elif self.operator == "sum":
-            reduction_value = CppVariable(
-                              "reduction_sum",
-                              f"{input_value.type_}")
+            reduction_value = CppVariable("reduction_sum", f"{input_value.type_}")
             self.init_block.add_code(CppAssignment(reduction_value, 0))
             self.loop_body_block.add_code(
-                cond_header +
-                f"{reduction_value} += {input_value};" +
-                cond_footer
+                cond_header + f"{reduction_value} += {input_value};" + cond_footer
             )
             self.loop_object.reduction_values += [reduction_value]
             self.loop_object.reduction_operators = ["sis_sum"]
         elif self.operator == "product":
-            reduction_value = CppVariable(
-                              "reduction_product",
-                              f"{input_value.type_}")
+            reduction_value = CppVariable("reduction_product", f"{input_value.type_}")
             self.init_block.add_code(CppAssignment(reduction_value, 1))
             self.loop_body_block.add_code(
-                cond_header +
-                f"{reduction_value} *= {input_value};" +
-                cond_footer
+                cond_header + f"{reduction_value} *= {input_value};" + cond_footer
             )
             self.loop_object.reduction_values += [reduction_value]
             self.loop_object.reduction_operators = ["sis_product"]
@@ -224,10 +239,9 @@ class Reduction(Node):
 
 
 class RangeGen(Node):
-
     """Range generation node."""
 
-    def to_cpp(self, irbuilder: ll.IRBuilder):
+    def to_llvm(self, irbuilder: ll.IRBuilder):
         # out ports go like var, var1_index, var2, var2_index, e.t.c.
         self.name_child_ports()
         # copy LoopExpression's input values:
@@ -237,104 +251,72 @@ class RangeGen(Node):
             # assuming it's always a Scatter Node
             scatter = get_src_node(o_p)
             if type(scatter) != Scatter:
-                raise CodeGenError(f"expected scatter node in {self.id}"
-                                   f"({self})")
+                raise CodeGenError(f"expected scatter node in {self.id}" f"({self})")
             scatter.loop_object = self.loop_object
-            cpp_eval(o_p, block)
-
-            # self.loop_object.loop_block = scatter.loop_block
-        self.loop_object.loop_block = CppBlock(add_curly_brackets=True,
-                                               indent_contents=True)
-        block.add_code(self.loop_object.loop_block)
+            llvm_eval(o_p, irbuilder)
 
 
 class RangeNumeric(Node):
 
-    def to_cpp(self, block):
+    def to_llvm(self, irbuilder):
         for i_p in self.in_ports:
-            cpp_eval(i_p, block)
+            llvm_eval(i_p, irbuilder)
 
 
 class Scatter(Node):
 
-    def to_cpp(self, irbuilder: ll.IRBuilder):
+    def to_llvm(self, irbuilder: ll.IRBuilder):
+        irbuilder.position_at_start(self.loop_object.init_block)
         # o_p: element, index
-        input_var = cpp_eval(self.in_ports[0], block)
-
-        index_var = CppVariable("index", "int")
-        element_var = CppVariable(self.out_ports[0].label,
-                                  self.out_ports[0].type.cpp_type)
-
-        block.add_variable(index_var)
-        # block.add_variable(element_var)
-
-        self.out_ports[1].value = index_var
-        self.out_ports[0].value = element_var
+        input_var = llvm_eval(self.in_ports[0], irbuilder)
 
         input_node = get_src_node(self.in_ports[0])
-        # TODO make pragmablocks for multiple loop ranges
-        self.loop_object.pragma_block = CppBlock()
-        block.add_code(self.loop_object.pragma_block)
         if type(input_node) == RangeNumeric:
             left = input_node.in_ports[0].value
             right = input_node.in_ports[1].value
-            # block.add_code(f"for (auto {element_var} : "
-            #              f"boost::irange({left}, {right}))")
-            block.add_code(f"for(int {element_var} = {left}; {element_var}"
-                           f" <= {right}; {element_var}++)")
+            self.out_ports[0].value = irbuilder.phi(
+                input_node.in_ports[0].value.type.llvm_type,
+                name=self.out_ports[0].label,
+            )
+            self.out_ports[0].value.add_incoming(left, self.loop_object.predecessor)
+            self.loop_object.latch = irbuilder.append_basic_block(name="latch")
+            irbuilder.goto_block(self.loop_object.latch)
+            element = irbuilder.add(
+                self.out_ports[0].value, ll.Constant(ll.IntType(32), 1)
+            )
+            self.out_ports[0].value.add_incoming(element, self.loop_object.latch)
+            irbuilder.branch(self.loop_object.init_block)
+
         else:
-            block.add_code(f"for (auto&& {element_var}: {input_var}.get())")
+            pass
+        # TODO non-int ranges
 
 
 class Condition(Node):
-    """ Not used directly (inherited classes are used instead) """
+    """Not used directly (inherited classes are used instead)"""
 
 
 class PreCondition(Condition):
 
-    def to_cpp(self, irbuilder: ll.IRBuilder):
-        cond_init_block = CppBlock()
-        self.loop_block.add_head_code("// pre-condition:")
-        self.loop_block.add_head_code(cond_init_block)
-        cond = cpp_eval(self.out_ports[0], cond_init_block)
-        block.add_code("while(1)")
-        block.add_code(self.loop_object.loop_block)
-        self.loop_object.loop_block.add_head_code(f"if(!{cond})"" break;")
-
-    def make_loop_block(self, irbuilder: ll.IRBuilder):
-        loop_block = CppBlock(add_curly_brackets=True,
-                              indent_contents=True)
-        self.loop_block = loop_block
-        self.loop_object.loop_block = loop_block
+    def to_llvm(self, irbuilder: ll.IRBuilder):
+        irbuilder.goto_block(self.loop_object.init_block)
+        cond = llvm_eval(self.out_ports[0], irbuilder)
+        irbuilder.cbranch(
+            cond, self.loop_object.loop_body_block, self.loop_object.follower
+        )
 
 
 class PostCondition(Condition):
 
-    def to_cpp(self, irbuilder: ll.IRBuilder):
-        cond_init_block = CppBlock()
-        self.loop_block.add_tail_code("// post-condition:")
-        self.loop_block.add_tail_code(cond_init_block)
-        cond = cpp_eval(self.out_ports[0], cond_init_block)
-        block.add_code("while(1)")
-        block.add_code(self.loop_object.loop_block)
-        self.loop_object.loop_block.add_tail_code(f"if(!{cond})"" break;")
-
-    def make_loop_block(self, irbuilder: ll.IRBuilder):
-        loop_block = CppBlock(add_curly_brackets=True,
-                              indent_contents=True)
-        self.loop_block = loop_block
-        self.loop_object.loop_block = loop_block
+    def to_llvm(self, irbuilder: ll.IRBuilder):
+        irbuilder.goto_block(self.loop_object.loop_body_block)
+        cond = llvm_eval(self.out_ports[0], irbuilder)
+        irbuilder.cbranch(cond, self.loop_object.init_block, self.loop_object.follower)
 
 
 class OldValue(Node):
 
-    def to_cpp(self, irbuilder: ll.IRBuilder):
-        old = CppVariable("old",
-                          self.in_ports[0].type.cpp_type)
-        block.add_variable(old)
-        self.out_ports[0].value = old
-        olds_block = CppBlock()
-        old_value = cpp_eval(self.in_ports[0], olds_block)
+    def to_llvm(self, irbuilder: ll.IRBuilder):
+        old_value = llvm_eval(self.in_ports[0], irbuilder)        olds_block = CppBlock()
+        self.out_ports[0].value = old_value
         # TODO create olds block in LoopExpression object?
-        olds_block.add_code(CppAssignment(old, old_value))
-        block.add_head_code(olds_block)

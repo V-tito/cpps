@@ -23,7 +23,7 @@ class If(Node):
         # evaluate branches:
         for o_p in self.out_ports:
             irbuilder.position_at_end(follower)
-            o_p.value = irbuilder.phi(o_p.type.llvm_type, name=o_p.label)
+            o_p.value = irbuilder.phi(o_p.type.llvm_type(), name=o_p.label)
             for index, then_block in enumerate(cond_blocks):
                 irbuilder.position_at_start(then_block)
                 self.branches[index].to_llvm(self, o_p, irbuilder, follower)
@@ -31,14 +31,18 @@ class If(Node):
 
 
 class Branch(Node):
+
     def to_llvm(self, parent_if, result_port, irbuilder: ll.IRBuilder, follower):
         for i_p, p_ip in zip(self.in_ports, parent_if.in_ports):
             i_p.value = p_ip.value
-
-            result_port.value.add_incoming(
-                llvm_eval(self.out_ports[result_port.index], irbuilder), irbuilder.block
-            )
+        result_port.value.add_incoming(
+            llvm_eval(self.out_ports[result_port.index], irbuilder), irbuilder.block
+        )
+        result_port.value._clear_string_cache()
+        try:
             irbuilder.branch(follower)
+        except AssertionError:
+            pass
 
 
 class Condition(Node):

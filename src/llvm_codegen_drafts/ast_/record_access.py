@@ -16,9 +16,13 @@ class RecordAccess(Node):
 
         record = llvm_eval(self.in_ports[0], irbuilder)
         indices = record.type.names_to_indices()
-
-        pointer = irbuilder.gep(indices[ll.Constant(ll.IntType(64), 0), self.field])
-        # Cloud Sisal Arrays' indices start from 1 by default
-        # hence the {index}-1
-        new_var = irbuilder.load(pointer)
+        if isinstance(record, ll.PointerType):
+            pointer = irbuilder.gep(
+                record, [ll.Constant(ll.IntType(32), 0), indices[self.field]]
+            )
+            # Cloud Sisal Arrays' indices start from 1 by default
+            # hence the {index}-1
+            new_var = irbuilder.load(pointer)
+        else:
+            new_var = irbuilder.extract_value(record, indices[self.field])
         self.out_ports[0].value = new_var

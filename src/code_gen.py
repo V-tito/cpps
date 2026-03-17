@@ -27,7 +27,7 @@ def compile_to_llvm(ir, module_name):
 def compile_to_llvm_bitcode(ir, module_name="", target_triple=None):
     from llvm_codegen_drafts.llvm.ir_to_llvm import ir_to_bitcode
 
-    res, _ = ir_to_bitcode(ir, target_triple)
+    res = ir_to_bitcode(ir, target_triple)
     return res
 
 

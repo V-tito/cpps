@@ -21,6 +21,6 @@ class Literal(Node):
         # literal_variable = CppVariable("literal", self.out_ports[0].type.cpp_type)
         # block.add_variable(literal_variable)
         # block.add_code(CppAssignment(literal_variab
-        val = ll.Constant(self.out_ports[0].type.llvm_type, self.value)
+        val = ll.Constant(self.out_ports[0].type.llvm_type(), self.value)
         self.value = val
         self.out_ports[0].value = self.value

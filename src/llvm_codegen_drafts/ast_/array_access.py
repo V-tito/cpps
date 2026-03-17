@@ -42,6 +42,6 @@ class ArrayAccess(Node):
                 new_var = irbuilder.extract_element(array, indexIR, name=label)
         if not new_var:
             new_var = irbuilder.gep(array, [ll.Constant(ll.IntType(64), 0), indexIR])
-            new_var = irbuilder.load(new_var)
+            new_var = irbuilder.load(new_var, name=label)
 
         self.out_ports[0].value = new_var
