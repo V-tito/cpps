@@ -152,54 +152,65 @@ class Reduction(Node):
         """Reduction node. Receives a boolean (1st port),
         which is a condition for including a new item,
         determined by value (2nd port)"""
-        with irbuilder.goto_block(self.loop_object.header):
-            cond = llvm_eval(self.in_ports[0], irbuilder)
-            input_value = llvm_eval(self.in_ports[1], irbuilder)
-
+        irbuilder.position_at_start(self.loop_object.header)
         if self.operator == "array":
             #need to figure out wtf to do with cond (i guess new array every time it is)
             #keep length somewhere (when figure out dope structs - likely in there)
-            reduction_value = irbuilder.phi(
-                name="reduction_array" #, f"Array<{self.in_ports[1].type.cpp_type}>"
-            )
-            self.loop_body_block.add_code(
-                #how to do pointer types (do on laptop)
-                cond_header
-                + f"{reduction_value}.push_back({input_value});"
-                + cond_footer
-            )
-
-        elif self.operator == "value":
-            reduction_value = input_value
-        elif self.operator == "sum":
+            
+            ptr=irbuilder.alloca(self.out_ports[0].type.llvm_type())
+            record_type = ll.LiteralStructType([type(ptr),ll.IntType(64)])
+            reduction_value = irbuilder.alloca(record_type, name="reduction_array")
+            addr=irbuilder.gep(reduction_value,0)
+            irbuilder.store(ptr,addr)
+            count=irbuilder.gep(reduction_value,1)
+            irbuilder.store(ll.Constant(type(input_value),0),count)
+        else:
             reduction_value=irbuilder.phi(type(input_value))
-            reduction_value.add_incoming(ll.Constant(type(input_value),0),self.loop_object.predecessor)
-            with irbuilder.goto_block(self.loop_object.latch):
-                if  isinstance(type(input_value),ll.IntType):
-                    new_value=irbuilder.add(input_value,reduction_value,name="reduction_sum.next")
-                else:
-                    if isinstance(type(input_value),ll.DoubleType):
-                        new_value=irbuilder.fadd(input_value,reduction_value,name="reduction_sum.next")
+            if self.operator == "sum":
+                reduction_value.add_incoming(ll.Constant(type(input_value),0),self.loop_object.predecessor)
+                self.loop_object.reduction_values += [reduction_value]
+                self.loop_object.reduction_operators = ["sis_sum"]
+            if self.operator == "product":
+                reduction_value.add_incoming(ll.Constant(type(input_value),1),self.loop_object.predecessor)
+                self.loop_object.reduction_values += [reduction_value]
+                self.loop_object.reduction_operators = ["sis_product"]
+            
+        with irbuilder.goto_block(self.loop_object.latch):
+            input_value = llvm_eval(self.in_ports[1], irbuilder)
+            cond = llvm_eval(self.in_ports[0], irbuilder)
+            with irbuilder.if_else(cond) as (then, otherwise):
+                with then:
+                    if self.operator == "array":
+                        counter=irbuilder.add(irbuilder.load(count),ll.Constant(ll.IntType(64),1))
+                        new_elem=irbuilder.gep(ptr,ll.Constant(ll.IntType(64),0),counter)
+                        irbuilder.store(input_value,new_elem)
+                        irbuilder.store(counter,count)
                     else:
-                        raise CodeGenError("Failed to recognize reduction value type")
-            reduction_value.add_incoming(new_value,self.loop_object.latch)
-            self.loop_object.reduction_values += [reduction_value]
-            self.loop_object.reduction_operators = ["sis_sum"]
-        elif self.operator == "product":
-            reduction_value=irbuilder.phi(type(input_value))
-            reduction_value.add_incoming(ll.Constant(type(input_value),1),self.loop_object.predecessor)
-            with irbuilder.goto_block(self.loop_object.latch):
-                if  isinstance(type(input_value),ll.IntType):
-                    new_value=irbuilder.mul(input_value,reduction_value,name="reduction_product.next")
-                else:
-                    if isinstance(type(input_value),ll.DoubleType):
-                        new_value=irbuilder.fmul(input_value,reduction_value,name="reduction_product.next")
-                    else:
-                        raise CodeGenError("Failed to recognize reduction value type")
-            reduction_value.add_incoming(new_value,self.loop_object.latch)
-            self.loop_object.reduction_values += [reduction_value]
-            self.loop_object.reduction_operators = ["sis_product"]
-
+                        if self.operator == "value":
+                            new_value = input_value
+                        elif self.operator == "sum":
+                            if  isinstance(type(input_value),ll.IntType):
+                                new_value=irbuilder.add(input_value,reduction_value,name="reduction_sum.next")
+                                
+                            else:
+                                if isinstance(type(input_value),ll.DoubleType):
+                                    new_value=irbuilder.fadd(input_value,reduction_value,name="reduction_sum.next")
+                                else:
+                                    raise CodeGenError("Failed to recognize reduction value type")
+                        elif self.operator == "product":
+                            if  isinstance(type(input_value),ll.IntType):
+                                new_value=irbuilder.mul(input_value,reduction_value,name="reduction_product.next")
+                            else:
+                                if isinstance(type(input_value),ll.DoubleType):
+                                    new_value=irbuilder.fmul(input_value,reduction_value,name="reduction_product.next")
+                                else:
+                                    raise CodeGenError("Failed to recognize reduction value type")
+                        reduction_value.add_incoming(new_value,then)
+        # emit instructions for when the predicate is true
+                with otherwise:
+                    if self.operator != "array":
+                        new_value=reduction_value
+                        reduction_value.add_incoming(new_value,otherwise)
         self.out_ports[0].value = reduction_value
 
 
