@@ -105,6 +105,9 @@ class ArrayType(Type):
             if type(self.element) == ArrayType
             else self.element
         )
+    def make_dope_struct_type(self):
+        res=ll.LiteralStructType([ll.PointerType(self.__llvm_type__),ll.IntType(64)])
+        return res
 
     """def load_from_json_code(self, name, src_object):
         from .cpp.cpp_codegen import indent_cpp
