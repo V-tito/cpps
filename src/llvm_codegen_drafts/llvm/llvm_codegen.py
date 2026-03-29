@@ -35,7 +35,7 @@ class LlModule(ll.Module):
             raise CodeGenError("Number of arguments doesn't match")
 
         return [
-            _type.ctype if type(_type) is not ArrayType else _type.to_ctype(arg)
+            _type.ctype if type(_type) is not ArrayType else type(_type.to_ctype(arg))
             for _type, arg in zip(self.inputs.values(), args)
         ]
 
@@ -48,14 +48,21 @@ class LlModule(ll.Module):
 
     def get_output_ctype(self):
         if self.output:
-            from ..type import RecordType
+            from ..type import RecordType, ArrayType
 
             if len(self.output.items()) != 1:
-                ctypes = [(name, _type.ctype) for name, _type in self.output.items()]
+                ctypes = [
+                    (
+                        (name, _type.ctype)
+                        if type(_type) != ArrayType
+                        else (name, _type.make_retval())
+                    )
+                    for name, _type in self.output.items()
+                ]
                 return RecordType.make_ctypes_struct(fields=ctypes[:])
             else:
                 out = list(self.output.items())[0][1]
-                outctype = out.ctype
+                outctype = out.ctype if type(out) != ArrayType else out.make_retval()
                 return outctype
         else:
             return ll.VoidType
@@ -80,12 +87,13 @@ class LlModule(ll.Module):
         # self.functions += [create_main()]
 
     def run_on_jit(self, args: list):
-        from ctypes import CFUNCTYPE
+        from ctypes import CFUNCTYPE, _Pointer, Structure
 
         if not self.engine:
             self.bitcode_gen()
         func_ptr = self.engine.get_function_address("main")
         out_ = self.get_output_ctype()
+        # out_is_array = self.out_is_array()
         inp = self.get_input_ctypes(args)
         cfunctup = CFUNCTYPE(out_, *inp)
         cfunc = cfunctup(func_ptr)
@@ -94,6 +102,8 @@ class LlModule(ll.Module):
             arg_formatted = argtype.to_ctype(arg)
             args_formatted.append(arg_formatted)
         res = cfunc(*args_formatted)
+        if isinstance(type(res), _Pointer):
+            res = res.contents
         return res
 
 

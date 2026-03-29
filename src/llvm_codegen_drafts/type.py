@@ -81,17 +81,83 @@ def remove_spec_symbols(string):
 
 class ArrayType(Type):
     count = 0  # default element count todo determine by optimizer
+    ctypes_ = []
+
+    def llvm_type(self):
+        return ll.ArrayType(
+            (
+                self.element.llvm_type()
+                if not isinstance(self.element, ArrayType)
+                else self.element.make_dope_struct_type()
+            ),
+            self.count,
+        )
 
     def __init__(self, type_object):
         super().__init__(type_object)
-        self.__llvm_type__ = ll.ArrayType(self.element.llvm_type, self.count)
-        self.ctype = self.element.ctype * self.count
+
+    @classmethod
+    def get_dim_sizes(cls, vals, depth):
+        sizes = []
+        if depth > 1:
+            sizes = ArrayType.get_dim_sizes(vals[0], depth - 1)
+        sizes.append(len(vals))
+        return sizes
+
+    def convert_top_level_array(self, vals):
+        if not self.ctypes_:
+            sizes = ArrayType.get_dim_sizes(vals, self.dimensions())
+            prev_ctype = self.bottom_element_type().ctype
+            underlying_ctypes = []
+            for i in range(0, self.dimensions()):
+                prev_arr_type = prev_ctype * sizes[i]
+                underlying_ptr = POINTER(prev_arr_type)
+                dope_struct = RecordType.make_ctypes_struct(
+                    [("ptr", underlying_ptr), ("count", c_long)]
+                )
+                ptr = POINTER(dope_struct)
+                underlying_ctypes.append(
+                    (dope_struct, ptr, prev_arr_type, underlying_ptr)
+                )
+                prev_ctype = ptr
+                self.ctypes_ = underlying_ctypes
+        try:
+            return self.convert_array(vals, self.ctypes_)
+        except Exception as e:
+            print(e)
+            self.ctypes_ = []
+            return self.convert_top_level_array(vals)
+
+    def convert_array(self, vals, ctypes_):
+        converted_elems = []
+        if self.dimensions() > 1:
+            for val in vals:
+                converted_elems.append(self.element.convert_array(val, ctypes_))
+        else:
+            for val in vals:
+                converted_elems.append(self.element.to_ctype(val))
+        underlying_val = ctypes_[self.dimensions() - 1][2](*converted_elems)
+        val_ptr = ctypes_[self.dimensions() - 1][3](underlying_val)
+        dope_struct = ctypes_[self.dimensions() - 1][0](
+            val_ptr, c_long(len(converted_elems))
+        )
+        ptr = ctypes_[self.dimensions() - 1][1](dope_struct)
+        return ptr
 
     def to_ctype(self, values):
-        ctype = self.element.ctype * self.count
-        values_formatted = (self.element.to_ctype(value) for value in values)
-        res = ctype(values_formatted)
-        return res
+        return self.convert_top_level_array(values)
+
+    def make_retval(self):
+        if type(self.element) != ArrayType:
+            prev_arr_type = self.element.ctype
+            underlying_ptr = POINTER(prev_arr_type)
+            dope_struct = RecordType.make_ctypes_struct(
+                [("ptr", underlying_ptr), ("count", c_long)]
+            )
+            ptr = POINTER(dope_struct)
+            return ptr
+        else:
+            return
 
     def dimensions(self):
         return 1 + (
@@ -105,8 +171,10 @@ class ArrayType(Type):
             if type(self.element) == ArrayType
             else self.element
         )
+
     def make_dope_struct_type(self):
-        res=ll.LiteralStructType([ll.PointerType(self.__llvm_type__),ll.IntType(64)])
+        res = ll.LiteralStructType([ll.PointerType(self.llvm_type()), ll.IntType(64)])
+        res = ll.PointerType(res)
         return res
 
     """def load_from_json_code(self, name, src_object):

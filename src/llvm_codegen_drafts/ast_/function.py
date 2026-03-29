@@ -138,9 +138,23 @@ class Function(Node):
     @to_llvm_method
     def to_llvm(self, irbuilder: ll.IRBuilder):
         # collect ir types corresponding to arg types in a list:
-        args = [port.type.llvm_type() if port.type is not ArrayType else port.type.make_dope_struct_type() for port in self.in_ports]
+        args = [
+            (
+                port.type.llvm_type()
+                if not isinstance(port.type, ArrayType)
+                else port.type.make_dope_struct_type()
+            )
+            for port in self.in_ports
+        ]
         # collect ir types corresponding to return types in a list:
-        ret_types = [port.type.llvm_type() for port in self.out_ports]
+        ret_types = [
+            (
+                port.type.llvm_type()
+                if not isinstance(port.type, ArrayType)
+                else port.type.make_dope_struct_type()
+            )
+            for port in self.out_ports
+        ]
         # format types for llvmlite
         if len(ret_types) == 0:
             ret_type = ll.VoidType()

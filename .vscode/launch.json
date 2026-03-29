@@ -9,7 +9,7 @@
             "request": "launch",
             "program": "/home/newt/Рабочий стол/cpps/src/sisal.py",
             "console": "integratedTerminal",
-            "args": ["-i","/home/newt/Рабочий стол/cpps/examples/fib.sis", "--llvm"],
+            "args": ["-i","/home/newt/Рабочий стол/cpps/examples/array2.sis", "--llvm","--llvmlitejit"], //,"--llvmlitejit"
             "justMyCode": false
         }
     ]

@@ -9,7 +9,7 @@ import sys
 import json
 import re
 from parser import parse
-from os import path
+from os import path, environ
 from utils.system import get_piped_input
 from parser.parser_state import enable_debug, debug_enabled
 from copy import copy
@@ -100,6 +100,7 @@ def main(args):
         elif "--llvm" in args:
             from code_gen import compile_to_llvm
 
+            environ["LLVMLITE_ENABLE_IR_LAYER_TYPED_POINTERS"] = "0"
             module_name = ""  # args[1].split(".")[:-1]
             # convert it to JSON text:
             ir = json.dumps(json_names(parsed), indent=1)
