@@ -142,7 +142,7 @@ class Function(Node):
             (
                 port.type.llvm_type()
                 if not isinstance(port.type, ArrayType)
-                else port.type.make_dope_struct_type()
+                else ll.PointerType()
             )
             for port in self.in_ports
         ]
@@ -151,7 +151,7 @@ class Function(Node):
             (
                 port.type.llvm_type()
                 if not isinstance(port.type, ArrayType)
-                else port.type.make_dope_struct_type()
+                else ll.PointerType()
             )
             for port in self.out_ports
         ]

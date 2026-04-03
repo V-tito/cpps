@@ -88,7 +88,7 @@ class ArrayType(Type):
             (
                 self.element.llvm_type()
                 if not isinstance(self.element, ArrayType)
-                else self.element.make_dope_struct_type()
+                else ll.PointerType()
             ),
             self.count,
         )
@@ -171,9 +171,9 @@ class ArrayType(Type):
             if type(self.element) == ArrayType
             else self.element
         )
-
+#MIGHT COME IN HANDY again to make dope str types; however, they're all the same with opaque ptrs
     def make_dope_struct_type(self):
-        res = ll.LiteralStructType([ll.PointerType(self.llvm_type()), ll.IntType(64)])
+        res = ll.LiteralStructType([ll.PointerType(), ll.IntType(64)])
         res = ll.PointerType(res)
         return res
 
