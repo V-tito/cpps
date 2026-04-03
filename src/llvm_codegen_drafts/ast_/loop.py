@@ -158,11 +158,11 @@ class Reduction(Node):
             #keep length somewhere (when figure out dope structs - likely in there)
             
             ptr=irbuilder.alloca(self.out_ports[0].type.llvm_type())
-            record_type = ll.LiteralStructType([type(ptr),ll.IntType(64)])
+            record_type = ll.LiteralStructType([ll.PointerType(),ll.IntType(64)])
             reduction_value = irbuilder.alloca(record_type, name="reduction_array")
-            addr=irbuilder.gep(reduction_value,0)
+            addr=irbuilder.gep(reduction_value,0,source_etype=ll.PointerType())
             irbuilder.store(ptr,addr)
-            count=irbuilder.gep(reduction_value,1)
+            count=irbuilder.gep(reduction_value,1,source_etype=ll.IntType(64))
             irbuilder.store(ll.Constant(type(input_value),0),count)
         else:
             reduction_value=irbuilder.phi(type(input_value))
@@ -181,8 +181,8 @@ class Reduction(Node):
             with irbuilder.if_else(cond) as (then, otherwise):
                 with then:
                     if self.operator == "array":
-                        counter=irbuilder.add(irbuilder.load(count),ll.Constant(ll.IntType(64),1))
-                        new_elem=irbuilder.gep(ptr,ll.Constant(ll.IntType(64),0),counter)
+                        counter=irbuilder.add(irbuilder.load(count,typ=ll.IntType(64)),ll.Constant(ll.IntType(64),1))
+                        new_elem=irbuilder.gep(ptr,[ll.Constant(ll.IntType(64),0),counter],source_etype=ptr.allocated_type)
                         irbuilder.store(input_value,new_elem)
                         irbuilder.store(counter,count)
                     else:

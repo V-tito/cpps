@@ -199,9 +199,9 @@ class Function(Node):
             ptr = irbuilder.alloca(ret_type)
             for index, val in enumerate(ret_vals):
                 indexIR = ll.Constant(ll.IntType(32), index)
-                target = irbuilder.gep(ptr, [zero, indexIR])
+                target = irbuilder.gep(ptr, [zero, indexIR],source_etype=ret_types[index])
                 irbuilder.store(val, target)
-            ret_val = irbuilder.load(ptr)
+            ret_val = irbuilder.load(ptr,typ=ret_type)
         irbuilder.ret(ret_val)
 
         # check if we requested time_out (time limiting) and process that:

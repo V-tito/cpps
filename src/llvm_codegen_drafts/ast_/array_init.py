@@ -41,17 +41,17 @@ class ArrayInit(Node):
         #
         for index, item in enumerate(items):
             indexIR = ll.Constant(ll.IntType(32), index)
-            target = irbuilder.gep(ptr, [ll.Constant(ll.IntType(32), 0), indexIR])
+            target = irbuilder.gep(ptr, [ll.Constant(ll.IntType(32), 0), indexIR],source_etype=type_.llvm_type())
             irbuilder.store(item, target)
 
         record_type = ll.LiteralStructType([ptr.type, ll.IntType(64)])
         new_var = irbuilder.alloca(record_type, name=self.out_ports[0].label)
         addr = irbuilder.gep(
-            new_var, [ll.Constant(ll.IntType(32), 0), ll.Constant(ll.IntType(32), 0)]
+            new_var, [ll.Constant(ll.IntType(32), 0), ll.Constant(ll.IntType(32), 0)],source_etype=record_type
         )
         irbuilder.store(ptr, addr)
         count = irbuilder.gep(
-            new_var, [ll.Constant(ll.IntType(32), 0), ll.Constant(ll.IntType(32), 1)]
+            new_var, [ll.Constant(ll.IntType(32), 0), ll.Constant(ll.IntType(32), 1)],source_etype=ll.IntType(64)
         )
         irbuilder.store(ll.Constant(ll.IntType(64), type_.count), count)
         # new_var = ll.PointerType(new_var)
