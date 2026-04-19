@@ -4,19 +4,51 @@
 code generator array initialization
 """
 import llvmlite.ir as ll
+import llvmlite.binding as llvm
+from ..type import ArrayType
 
 # import llvmlite.binding as llvm
 from ..node import Node
 from ..llvm.llvm_codegen import llvm_eval
+from ..edge import Edge
 
 # from ..error import CodeGenError
 
 
 class ArrayInit(Node):
+    def get_type_size_in_ir(self, irbuilder, element_type, count):
+        """
+        Generate IR that computes the size at runtime using GEP arithmetic.
+        This avoids needing the size at IR generation time.
+        """
+        # Create a dummy allocation of 1 element
+        dummy = irbuilder.alloca(element_type)
+
+        # Create a GEP at index 'count' and get the byte difference
+        # This works because LLVM's GEP uses type sizes internally
+        ptr_start = irbuilder.ptrtoint(dummy, ll.IntType(64))
+        ptr_end = irbuilder.gep(dummy, [ll.Constant(ll.IntType(32), count)])
+        ptr_end_casted = irbuilder.ptrtoint(ptr_end, ll.IntType(64))
+
+        size = irbuilder.sub(ptr_end_casted, ptr_start)
+        return size
+
+    def is_output_array(self):
+        output_array = False
+        for edge in Edge.edges_from[self.out_ports[0].id]:
+            if edge.to.node.name == "Lambda":
+                output_array = True
+                break
+            elif edge.to.node.name == "ArrayInit":
+                if edge.to.node.is_output_array():
+                    output_array = True
+                    break
+        return output_array
 
     def to_llvm(self, irbuilder: ll.IRBuilder):
         # inputs: array, index
         type_ = self.out_ports[0].type
+        output_array = self.is_output_array()
         # dim = type_.dimensions()
         # print(dim)
         # if dim>1:
@@ -37,23 +69,55 @@ class ArrayInit(Node):
 
         type_.count = len(items)
         dim = type_.dimensions()
-        ptr = irbuilder.alloca(type_.llvm_type())
-        #
+        if not output_array:
+            ptr = irbuilder.alloca(type_.llvm_type())
+        else:
+            arg = self.get_type_size_in_ir(irbuilder, type_.llvm_type(), 1)
+            ptr = irbuilder.call(
+                irbuilder.module.malloc,
+                [arg],
+            )
+        ptr = irbuilder.bitcast(ptr, ll.PointerType())
+        etyp = (
+            type_.element.llvm_type()
+            if not isinstance(type_.element, ArrayType)
+            else ll.PointerType() if output_array else type_.llvm_type()
+        )
+        zero = ll.Constant(ll.IntType(32), 0)
         for index, item in enumerate(items):
             indexIR = ll.Constant(ll.IntType(32), index)
-            target = irbuilder.gep(ptr, [ll.Constant(ll.IntType(32), 0), indexIR],source_etype=type_.llvm_type())
+            indices = [indexIR] if output_array else [zero, indexIR]
+            target = irbuilder.gep(
+                ptr,
+                indices,
+                source_etype=etyp,
+            )
+            int_ = irbuilder.ptrtoint(target, ll.IntType(64))
+            target = irbuilder.inttoptr(int_, ll.PointerType())
             irbuilder.store(item, target)
 
-        record_type = ll.LiteralStructType([ptr.type, ll.IntType(64)])
-        new_var = irbuilder.alloca(record_type, name=self.out_ports[0].label)
+        record_type = ll.LiteralStructType([ll.PointerType(), ll.IntType(32)])
+        if output_array:
+            size = self.get_type_size_in_ir(irbuilder, record_type, 1)
+            new_var = irbuilder.call(irbuilder.module.malloc, [size])
+        else:
+            new_var = irbuilder.alloca(record_type, name=self.out_ports[0].label)
         addr = irbuilder.gep(
-            new_var, [ll.Constant(ll.IntType(32), 0), ll.Constant(ll.IntType(32), 0)],source_etype=record_type
+            new_var,
+            [zero, zero],
+            source_etype=record_type,
         )
+        # int_ = irbuilder.ptrtoint(addr, ll.IntType(64))
+        # addr2 = irbuilder.inttoptr(int_, ll.PointerType())
         irbuilder.store(ptr, addr)
         count = irbuilder.gep(
-            new_var, [ll.Constant(ll.IntType(32), 0), ll.Constant(ll.IntType(32), 1)],source_etype=ll.IntType(64)
+            new_var,
+            [zero, ll.Constant(ll.IntType(32), 1)],
+            source_etype=record_type,
         )
-        irbuilder.store(ll.Constant(ll.IntType(64), type_.count), count)
+        # int_ = irbuilder.ptrtoint(count, ll.IntType(64))
+        # count = irbuilder.inttoptr(int_, ll.PointerType())
+        irbuilder.store(ll.Constant(ll.IntType(32), type_.count), count)
         # new_var = ll.PointerType(new_var)
 
         self.out_ports[0].value = new_var

@@ -123,7 +123,7 @@ def main(args):
                             res = run_via_llvmlite(
                                 llvm_src, module_name, args=internal_args
                             )
-                            print(res)
+                            print(f"\nStatus: {res}")
                             # todo how to read n write args. ret lambda?
                             # possibly would be eliminated later as adding read/write functions to ir seems more in tune with the current design
                         else:

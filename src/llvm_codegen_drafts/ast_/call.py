@@ -59,8 +59,8 @@ class FunctionCall(Node):
                     result = irbuilder.call(called_function, args, name=name)
                     # process_timeout()
                     self.out_ports[0].value = result
-        """else:
-            FunctionCall.overriden_functions[self.callee](self, block)"""
+        else:
+            FunctionCall.overriden_functions[self.callee](self, irbuilder)
 
 
 """Overriden implementations (used instead of Function's to_llvm method)"""
@@ -94,12 +94,31 @@ def reml(self, irbuilder):
     self.out_ports[0].value = result"""
 
 
-FunctionCall.overriden_functions = {
-    "remh": remh,
-    "reml": reml,
-}
+def size(self, irbuilder: ll.IRBuilder):
+    args = [llvm_eval(i_p, irbuilder) for i_p in self.in_ports]
+    arr_descriptor_ptr = args[0]
+    name = self.out_ports[0].label if self.out_ports[0].renamed else "call"
 
-FunctionCall.built_in_functions = ["size"]
+    result_ptr = irbuilder.gep(
+        arr_descriptor_ptr,
+        [ll.Constant(ll.IntType(32), 0), ll.Constant(ll.IntType(32), 1)],
+        source_etype=self.in_ports[0].type.make_dope_struct_type(),
+    )
+    # process_timeout()
+    result = irbuilder.zext(
+        irbuilder.load(
+            result_ptr,
+            typ=ll.IntType(32),
+        ),
+        ll.IntType(64),
+        name=name,
+    )
+    self.out_ports[0].value = result
+
+
+FunctionCall.overriden_functions = {"remh": remh, "reml": reml, "size": size}
+
+# FunctionCall.built_in_functions = ["size"]
 
 
 class BuiltInFunctionCall(Node):

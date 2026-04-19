@@ -8,7 +8,7 @@ code generator function
 from ..node import Node, to_llvm_method
 from ..llvm.llvm_codegen import llvm_eval, LlModule
 from ..error import CodeGenError
-from ..type import ArrayType
+from ..type import ArrayType, printf_str
 
 # from ..cpp import template
 # from ..codegen_state import global_no_error
@@ -167,8 +167,9 @@ class Function(Node):
         func_type = ll.FunctionType(ret_type, args)
 
         # choose an appropriate name for the function (renaming main might be needed if end up adding default input-output function):
-        self.ir_function_name = self.function_name
-        # (            "sisal_main" if self.function_name == "main" else         )
+        self.ir_function_name = (
+            "sisal_main" if self.function_name == "main" else self.function_name
+        )
         # make a function object
         func = ll.Function(
             module=self.module, ftype=func_type, name=self.ir_function_name
@@ -180,9 +181,9 @@ class Function(Node):
             irbuilder.module.set_inputs(
                 {port.label: port.type for port in self.in_ports}
             )
-            irbuilder.module.set_output(
-                {port.label: port.type for port in self.out_ports}
-            )
+            # irbuilder.module.set_output(
+            #    {port.label: port.type for port in self.out_ports}
+            # )
         # assign arguments to temp vars:
         for port, arg in zip(self.in_ports, func.args):
             port.value = arg
@@ -199,9 +200,15 @@ class Function(Node):
             ptr = irbuilder.alloca(ret_type)
             for index, val in enumerate(ret_vals):
                 indexIR = ll.Constant(ll.IntType(32), index)
-                target = irbuilder.gep(ptr, [zero, indexIR],source_etype=ret_types[index])
+                target = irbuilder.gep(ptr, [zero, indexIR], source_etype=ret_type)
+                intt = irbuilder.ptrtoint(
+                    target, ll.IntType(64)
+                )  # to be removed when gep works humanly with opaque ptrs
+                target = irbuilder.inttoptr(
+                    intt, ll.PointerType()
+                )  # to be removed when gep works humanly with opaque ptrs
                 irbuilder.store(val, target)
-            ret_val = irbuilder.load(ptr,typ=ret_type)
+            ret_val = irbuilder.load(ptr, typ=ret_type)
         irbuilder.ret(ret_val)
 
         # check if we requested time_out (time limiting) and process that:
@@ -210,19 +217,20 @@ class Function(Node):
         return func
 
 
-"""def create_main(irbuilder: ll.IRBuilder):
-    # accepts data from console (no structs or arrays for the time being)
-    # and provides console output
+def create_main(irbuilder: ll.IRBuilder):
+    # passes down args and provides console output
     if "main" not in Function.functions:
         raise CodeGenError("Module must contain main-function.")
     main_ir = Function.functions["main"]
     main_ib = irbuilder.module.get_global("sisal_main")
-    main_type = ll.FunctionType(ll.VoidType, [])
+    args = [arg.type for arg in main_ib.args]
+    main_type = ll.FunctionType(ll.IntType(32), args)
+    print(isinstance(main_type, ll.Type))
     main = ll.Function(irbuilder.module, main_type, "main")
-    block = main.append_basic_block
+    block = main.append_basic_block()
     irbuilder.position_at_start(block)
-    args = main.args()
-    input_str_type = lambda len: ll.ArrayType(ll.IntType(8), len)
+
+    """input_str_type = lambda len: ll.ArrayType(ll.IntType(8), len)
     scanf_types = {
         "int_input": ll.GlobalVariable(irbuilder.module, input_str_type(3)),
         "lint_input": ll.GlobalVariable(irbuilder.module, input_str_type(4)),
@@ -261,18 +269,31 @@ class Function(Node):
             argvals.append(argval)
         # установить тип инта по умолчанию и делать trunc/extend инпута
         res = irbuilder.call(main_ib, argvals)
-        printf = ll.Function(
-            irbuilder.module,
-            ll.FunctionType(ll.IntType(32), ll.PointerType(), var_arg=True),
+        """
+    # перенести типы для принта/скана в местный тип
+    # и билдить вот это параллельно с sisal_main
+    # тем более что у нас есть main_ir
+    irbuilder.module.set_output({})
+    printf = irbuilder.module.printf
+    res = irbuilder.call(main_ib, main.args)
+    if len(main_ir.out_ports) > 1:
+        str_val = "{\n\00"
+        printf_str(irbuilder, printf, str_val)
+        for i, o_p in enumerate(main_ir.out_ports):
+            val = irbuilder.extract_value(
+                res,
+                # ll.Constant(ll.IntType(32), i),
+                i,
+            )
+            if i > 0:
+                str_val = ",\n\00"
+                printf_str(irbuilder, printf, str_val)
+            o_p.type.add_printf(irbuilder, printf, val, o_p.label)
+        str_val = "\n}\00"
+        printf_str(irbuilder, printf, str_val)
+    else:
+        main_ir.out_ports[0].type.add_printf(
+            irbuilder, printf, res, main_ir.out_ports[0].label
         )
-        # перенести типы для принта/скана в местный тип
-        # и билдить вот это параллельно с sisal_main
-        # тем более что у нас есть main_ir
-        typ = type(type(main_ib).return_type)
-        typname = ""
-        if isinstance(typ, ll.IntType):
-            typname = "int_input"
-        else:
-            if isinstance(typ, ll.DoubleType):
-                typname = "float_input"
-        irbuilder.call(printf, [scanf_inputs[typname], res])"""
+
+    irbuilder.ret(ll.Constant(ll.IntType(32), 0))

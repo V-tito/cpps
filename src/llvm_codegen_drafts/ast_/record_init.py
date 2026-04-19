@@ -23,7 +23,11 @@ class RecordInit(Node):
         new_var = irbuilder.alloca(record_type)
 
         for port_index, value in enumerate(items):
-            addr = irbuilder.gep(new_var, port_index,source_etype=types[port_index])
+            addr = irbuilder.gep(
+                new_var,
+                port_index,
+                # source_etype=types[port_index]
+            )
             irbuilder.store(value, addr)
 
-        self.out_ports[0].value = irbuilder.load(new_var,typ=record_type)
+        self.out_ports[0].value = irbuilder.load(new_var, typ=record_type)

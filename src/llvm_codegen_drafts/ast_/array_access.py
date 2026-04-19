@@ -24,15 +24,15 @@ class ArrayAccess(Node):
         array_ptr = irbuilder.gep(
             dope_struct_ptr,
             [ll.Constant(ll.IntType(32), 0), ll.Constant(ll.IntType(32), 0)],
-            source_etype=ll.PointerType()
+            source_etype=self.in_ports[0].type.make_dope_struct_type(),
         )
-        array_ptr = irbuilder.load(array_ptr,typ=ll.PointerType())
+        array_ptr = irbuilder.load(array_ptr, typ=ll.PointerType())
         bounds = irbuilder.gep(
             dope_struct_ptr,
             [ll.Constant(ll.IntType(32), 0), ll.Constant(ll.IntType(32), 1)],
-            source_etype=ll.IntType(64)
+            source_etype=self.in_ports[0].type.make_dope_struct_type(),
         )
-        bounds_count = irbuilder.load(bounds,typ=ll.IntType(64))
+        bounds_count = irbuilder.load(bounds, typ=ll.IntType(32))
         # array_ptr would be gep array 0
         # bounds would be gep array 1
         index = llvm_eval(self.in_ports[1], irbuilder)
@@ -42,9 +42,11 @@ class ArrayAccess(Node):
 
         label = self.out_ports[0].label if self.out_ports[0].renamed else ""
         if type(index) is not int:
-            indexIR = irbuilder.sub(index, ll.Constant(ll.IntType(64), 1))
+            if index.type == ll.IntType(64):
+                index = irbuilder.trunc(index, ll.IntType(32))
+            indexIR = irbuilder.sub(index, ll.Constant(ll.IntType(32), 1))
         else:
-            indexIR = ll.Constant(ll.IntType(64), index - 1)
+            indexIR = ll.Constant(ll.IntType(32), index - 1)
             if index - 1 < 0:
                 raise CodeGenError(
                     "Literal array index is out of bounds", self.location
@@ -73,8 +75,41 @@ class ArrayAccess(Node):
         #    new_ptr = irbuilder.alloca(source_port.type.llvm_type())
         #    irbuilder.store(array_ptr, new_ptr)
         #    array_ptr = new_ptr  # irbuilder.gep(array_ptr, [ll.Constant(ll.IntType(64), 0)])
-        res = irbuilder.gep(array_ptr, [ll.Constant(ll.IntType(32), 0), indexIR],source_etype=self.in_ports[0].type.element.llvm_type())
-        res = irbuilder.load(res, name=label,typ=self.in_ports[0].type.element.llvm_type())
+        if Edge.edge_to[self.in_ports[0].id].from_.node.name == "ArrayInit":
+            if Edge.edge_to[self.in_ports[0].id].from_.node.is_output_array():
+                res = irbuilder.gep(
+                    array_ptr,
+                    [indexIR],  # source_etype=self.in_ports[0].type.element.llvm_type()
+                )
+            else:
+                res = irbuilder.gep(
+                    array_ptr,
+                    [
+                        ll.Constant(ll.IntType(32), 0),
+                        indexIR,
+                    ],  # source_etype=self.in_ports[0].type.element.llvm_type()
+                )
+        else:
+            res = irbuilder.gep(
+                array_ptr,
+                [
+                    ll.Constant(ll.IntType(32), 0),
+                    indexIR,
+                ],
+                source_etype=ll.ArrayType(
+                    self.in_ports[0].type.element.llvm_type(),
+                    self.in_ports[0].type.count,
+                ),
+            )
+        res = irbuilder.load(
+            res,
+            name=label,
+            typ=(
+                self.in_ports[0].type.element.llvm_type()
+                if not isinstance(self.in_ports[0].type.element, ArrayType)
+                else ll.PointerType()
+            ),
+        )
         # new_var.add_incoming(res, not_poison)
         # irbuilder.branch(follower)
         # with irbuilder.goto_block(poison):

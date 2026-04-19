@@ -6,12 +6,22 @@ Type for code generator
 import re
 import json
 import llvmlite.ir as ll
-from ctypes import *
+import ctypes as ct
+
 
 # from .codegen_state import global_no_error
 """Type classes have load_from_json_code and save_to_json_code
  methods. They return C++ code for those corresponding purposes
 """
+
+
+def printf_str(irbuilder, printf, str_val):
+    c_str_val = ll.Constant(
+        ll.ArrayType(ll.IntType(8), len(str_val)), bytearray(str_val.encode("utf-8"))
+    )
+    c_str = irbuilder.alloca(c_str_val.type)
+    irbuilder.store(c_str_val, c_str)
+    irbuilder.call(printf, [c_str])
 
 
 class Type:
@@ -38,6 +48,16 @@ class Type:
         else:
             return self.__llvm_type__
 
+    def add_printf(self, irbuilder: ll.IRBuilder, printf, val, label=None):
+        str_val = f"{label}: {self.fmt}\00" if label else f"{self.fmt}\00"
+        c_str_val = ll.Constant(
+            ll.ArrayType(ll.IntType(8), len(str_val)),
+            bytearray(str_val.encode("utf-8")),
+        )
+        c_str = irbuilder.alloca(c_str_val.type)
+        irbuilder.store(c_str_val, c_str)
+        irbuilder.call(printf, [c_str, val])
+
     @property
     def internal_type(self):
         return self.__llvm_type__
@@ -54,7 +74,9 @@ class Type:
 
 class IntegerType(Type):
     __llvm_type__ = ll.IntType(64)
-    ctype = c_int64
+    ctype = ct.c_int64
+
+    fmt = "%ld"
 
     '''def load_from_json_code(self, name, src_object):
         return f"{self.cpp_type} {name} = {src_object}.asInt();"'''
@@ -62,7 +84,9 @@ class IntegerType(Type):
 
 class RealType(Type):
     __llvm_type__ = ll.DoubleType()
-    ctype = c_double
+    ctype = ct.c_double
+
+    fmt = "%f"
 
     '''def load_from_json_code(self, name, src_object):
         return f"{self.cpp_type} {name} = {src_object}.asFloat();"'''
@@ -70,9 +94,11 @@ class RealType(Type):
 
 class BooleanType(Type):
     __llvm_type__ = ll.IntType(1)
-    ctype = c_bool
+    ctype = ct.c_bool
     '''def load_from_json_code(self, name, src_object):
         return f"{self.cpp_type} {name} = {src_object}.asBool();"'''
+
+    fmt = "%d"
 
 
 def remove_spec_symbols(string):
@@ -104,6 +130,119 @@ class ArrayType(Type):
         sizes.append(len(vals))
         return sizes
 
+    def get_fmt_string(self):
+        res = f"[{f"{self.element.get_fmt_string()}, "*(self.count-1)+f"{self.element.get_fmt_string()}"}]\00"
+        return res
+
+    def create_loop_func(self, irbuilder: ll.IRBuilder, printf):
+        loop_ftype = ll.FunctionType(ll.VoidType(), [ll.PointerType(), ll.IntType(32)])
+        loop_func = ll.Function(
+            irbuilder.module,
+            loop_ftype,
+            f"array_print_loop_{irbuilder.module.array_print_loop_count}",
+        )
+        irbuilder.module.array_print_loop_count += 1
+        arr_ptr = loop_func.args[0]
+        count = loop_func.args[1]
+        entry = loop_func.append_basic_block("entry")
+        array_loop_header = loop_func.append_basic_block("array_loop_header")
+        array_loop_comma = loop_func.append_basic_block("array_loop_comma")
+        print_comma = loop_func.append_basic_block("print_comma")
+        no_comma = loop_func.append_basic_block("no_comma")
+        array_loop_block = loop_func.append_basic_block("array_print_loop")
+        array_loop_follower = loop_func.append_basic_block("array_loop_follower")
+        with irbuilder.goto_block(entry):
+            str_val = ", \00"
+            c_str_val = ll.Constant(
+                ll.ArrayType(ll.IntType(8), len(str_val)),
+                bytearray(str_val.encode("utf-8")),
+            )
+            c_str = irbuilder.alloca(c_str_val.type)
+            irbuilder.store(c_str_val, c_str)
+            irbuilder.branch(array_loop_header)
+        with irbuilder.goto_block(array_loop_header):
+            i = irbuilder.phi(ll.IntType(32))
+            cond = irbuilder.icmp_unsigned("==", i, count)
+            irbuilder.cbranch(cond, array_loop_follower, array_loop_comma)
+            i.add_incoming(ll.Constant(ll.IntType(32), 0), entry)
+        with irbuilder.goto_block(array_loop_comma):
+            print_cond = irbuilder.icmp_unsigned(
+                "!=", i, ll.Constant(ll.IntType(32), 0)
+            )
+            irbuilder.cbranch(print_cond, print_comma, no_comma)
+        with irbuilder.goto_block(print_comma):
+            irbuilder.call(printf, [c_str])
+            irbuilder.branch(array_loop_block)
+        with irbuilder.goto_block(no_comma):
+            irbuilder.branch(array_loop_block)
+        with irbuilder.goto_block(array_loop_block):
+            elem_ptr = irbuilder.gep(
+                arr_ptr,
+                [ll.Constant(ll.IntType(32), 0), i],
+                source_etype=ll.ArrayType(
+                    (
+                        self.element.llvm_type()
+                        if not isinstance(self.element, ArrayType)
+                        else ll.PointerType()
+                    ),
+                    self.count,
+                ),
+            )
+            elem = irbuilder.load(
+                elem_ptr,
+                typ=(
+                    self.element.llvm_type()
+                    if not isinstance(self.element, ArrayType)
+                    else ll.PointerType()
+                ),
+            )
+            self.element.add_printf(irbuilder, printf, elem)
+            new_i = irbuilder.add(i, ll.Constant(ll.IntType(32), 1))
+            i.add_incoming(new_i, array_loop_block)
+            irbuilder.branch(array_loop_header)
+        with irbuilder.goto_block(array_loop_follower):
+            irbuilder.ret_void()
+        return loop_func
+
+    def add_printf(self, irbuilder, printf, val, label=None):
+        str_val = f"{label}: [\00" if label else "[\00"
+        printf_str(irbuilder, printf, str_val)
+        valtype = self.make_dope_struct_type()
+        arr_ptr = irbuilder.load(
+            irbuilder.gep(
+                val,
+                [ll.Constant(ll.IntType(32), 0), ll.Constant(ll.IntType(32), 0)],
+                source_etype=valtype,
+            ),
+            typ=ll.PointerType(),
+        )
+        count = irbuilder.load(
+            irbuilder.gep(
+                val,
+                [ll.Constant(ll.IntType(32), 0), ll.Constant(ll.IntType(32), 1)],
+                source_etype=valtype,
+            ),
+            typ=ll.IntType(32),
+        )
+        loopf = self.create_loop_func(irbuilder, printf)
+        irbuilder.call(loopf, [arr_ptr, count])
+        str_val = "]\00"
+        printf_str(irbuilder, printf, str_val)
+
+    def print_arr(self, ptr):
+        dope_struct = ptr[0]
+        arr_ptr = dope_struct.ptr
+        count = dope_struct.count
+        res = ""
+        for i in range(0, count):
+            elem = arr_ptr[i]
+            if type(self.element) == ArrayType:
+                res += self.element.print_arr(elem)
+            else:
+                res += str(elem) + " "
+        res += "\n"
+        return res
+
     def convert_top_level_array(self, vals):
         if not self.ctypes_:
             sizes = ArrayType.get_dim_sizes(vals, self.dimensions())
@@ -111,11 +250,11 @@ class ArrayType(Type):
             underlying_ctypes = []
             for i in range(0, self.dimensions()):
                 prev_arr_type = prev_ctype * sizes[i]
-                underlying_ptr = POINTER(prev_arr_type)
+                underlying_ptr = ct.POINTER(prev_arr_type)
                 dope_struct = RecordType.make_ctypes_struct(
-                    [("ptr", underlying_ptr), ("count", c_long)]
+                    [("ptr", underlying_ptr), ("count", ct.c_long)]
                 )
-                ptr = POINTER(dope_struct)
+                ptr = ct.POINTER(dope_struct)
                 underlying_ctypes.append(
                     (dope_struct, ptr, prev_arr_type, underlying_ptr)
                 )
@@ -139,7 +278,7 @@ class ArrayType(Type):
         underlying_val = ctypes_[self.dimensions() - 1][2](*converted_elems)
         val_ptr = ctypes_[self.dimensions() - 1][3](underlying_val)
         dope_struct = ctypes_[self.dimensions() - 1][0](
-            val_ptr, c_long(len(converted_elems))
+            val_ptr, ct.c_long(len(converted_elems))
         )
         ptr = ctypes_[self.dimensions() - 1][1](dope_struct)
         return ptr
@@ -150,11 +289,11 @@ class ArrayType(Type):
     def make_retval(self):
         if type(self.element) != ArrayType:
             prev_arr_type = self.element.ctype
-            underlying_ptr = POINTER(prev_arr_type)
+            underlying_ptr = ct.POINTER(prev_arr_type)
             dope_struct = RecordType.make_ctypes_struct(
-                [("ptr", underlying_ptr), ("count", c_long)]
+                [("ptr", underlying_ptr), ("count", ct.c_long)]
             )
-            ptr = POINTER(dope_struct)
+            ptr = ct.POINTER(dope_struct)
             return ptr
         else:
             return
@@ -171,10 +310,10 @@ class ArrayType(Type):
             if type(self.element) == ArrayType
             else self.element
         )
-#MIGHT COME IN HANDY again to make dope str types; however, they're all the same with opaque ptrs
+
+    # MIGHT COME IN HANDY again to make dope str types; however, they're all the same with opaque ptrs
     def make_dope_struct_type(self):
-        res = ll.LiteralStructType([ll.PointerType(), ll.IntType(64)])
-        res = ll.PointerType(res)
+        res = ll.LiteralStructType([ll.PointerType(), ll.IntType(32)])
         return res
 
     """def load_from_json_code(self, name, src_object):
@@ -286,13 +425,14 @@ class RecordType(Type):
 
     @classmethod
     def make_ctypes_struct(cls, fields: list):
-        class Struct(Structure):
+        class Struct(ct.Structure):
             _fields_ = fields
 
             def __str__(self):
                 res = "{\n"
                 for field in self._fields_:
-                    res += f"{field[0]} : {getattr(self,field[0])} \n"
+                    val = getattr(self, field[0])
+                    res += f"{field[0]} : {val} \n"
                 res += "}"
                 return res
 
@@ -307,6 +447,38 @@ class RecordType(Type):
         ctype = self.ctype
         res = ctype(*ctyped_items)
         return res
+
+    def get_fmt_string(self):
+        res = (
+            "{"
+            + f"{[f"{field[0]}: {field[1].get_fmt_string()},\n" for field in self.fields.items()]}"
+            + "}\00"
+        )
+        return res
+
+    def add_printf(self, irbuilder, printf, val, label=None):
+        str_val = f"{label}: " + "{\n\00"
+        printf_str(irbuilder, printf, str_val)
+        for i, field in enumerate(self.fields.items()):
+            label_ = field[0]
+            typ = field[1]
+            if isinstance(val, ll.PointerType):
+                field_val = irbuilder.load(
+                    irbuilder.gep(
+                        val,
+                        [
+                            ll.Constant(ll.IntType(32), 0),
+                            ll.Constant(ll.IntType(32), i),
+                        ],
+                    )
+                )
+            else:
+                field_val = irbuilder.extract_value(val, i)
+            typ.add_printf(irbuilder, printf, field_val, label_)
+            str_val = ",\n\00"
+            printf_str(irbuilder, printf, str_val)
+        str_val = "}\n\00"
+        printf_str(irbuilder, printf, str_val)
 
     '''def get_struct(self):
         """returns a C++ struct based on this record"""

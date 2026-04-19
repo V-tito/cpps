@@ -13,10 +13,24 @@ class LlModule(ll.Module):
         self.modref = None
         self.inputs = []
         self.output = None
+        self.printf = ll.Function(
+            self,
+            ll.FunctionType(ll.IntType(32), [ll.PointerType()], var_arg=True),
+            name="printf",
+        )
+        self.malloc = ll.Function(
+            self,
+            ll.FunctionType(ll.PointerType(), [ll.IntType(64)]),
+            name="malloc",
+        )
+        self.array_print_loop_count = 0
         for _, f in functions.items():
             f.module = self
             # self.add_global(
-            f.to_llvm(self.builder)
+            f.to_llvm(self.builder)  #
+        from ..ast_.function import create_main
+
+        create_main(self.builder)
 
     def __str__(self):
         return super().__str__()
@@ -65,7 +79,9 @@ class LlModule(ll.Module):
                 outctype = out.ctype if type(out) != ArrayType else out.make_retval()
                 return outctype
         else:
-            return ll.VoidType
+            from ctypes import c_int
+
+            return c_int
 
     def bitcode_gen(self, target_triple=None):
         module = llvm.parse_assembly(str(self))
@@ -82,12 +98,27 @@ class LlModule(ll.Module):
         self.engine = engine
         self.modref = module
         return module.as_bitcode()
-        # from ..ast_.function import create_main
-
-        # self.functions += [create_main()]
 
     def run_on_jit(self, args: list):
-        from ctypes import CFUNCTYPE, _Pointer, Structure
+        from ctypes import CFUNCTYPE, _Pointer, Structure, Array
+
+        def process_output(res):
+            if isinstance(res, _Pointer):
+                print("res inst ptr")
+                res = res.contents
+            if issubclass(type(res), Structure):
+                ret = "{\n"
+                for field in res._fields_:
+                    ret += f"{field[0]}: {process_output(getattr(res,field[0]))}\n"
+                ret += "}\n"
+                return ret
+            if isinstance(res, Array):
+                ret = f"[{res[0]}"
+                for i in range(1, res._length_):
+                    ret += f", {process_output(res[i])}"
+                ret += "]\n"
+                return ret
+            return res
 
         if not self.engine:
             self.bitcode_gen()
@@ -102,8 +133,6 @@ class LlModule(ll.Module):
             arg_formatted = argtype.to_ctype(arg)
             args_formatted.append(arg_formatted)
         res = cfunc(*args_formatted)
-        if isinstance(type(res), _Pointer):
-            res = res.contents
         return res
 
 
