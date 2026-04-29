@@ -270,3 +270,6 @@ class Node:
                 input_edges.append(input_edge)
 
         return nodes, internal_edges, input_edges
+
+    def mark_heap_allocation(self):
+        pass

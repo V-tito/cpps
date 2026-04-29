@@ -132,6 +132,14 @@ class LlModule(ll.Module):
         for arg, argtype in zip(args, self.get_input_types()):
             arg_formatted = argtype.to_ctype(arg)
             args_formatted.append(arg_formatted)
+
+        '''def timer():
+            return cfunc(*args_formatted)
+
+        import timeit
+
+        time = timeit.timeit(timer, globals=globals(), number=500000)
+        return f"Total time for 500000 executions: {time:.6f} seconds\nAverage per execution: {time/500000:.10f} seconds"'''
         res = cfunc(*args_formatted)
         return res
 
@@ -148,3 +156,14 @@ def llvm_eval(in_port, irbuilder):
     in_port.value = port.value
     irbuilder.goto_block(current_block)
     return port.value
+
+
+def heap_allocation_helper(in_port):
+    port = Edge.edge_to[in_port.id].from_
+    from ..type import ArrayType
+
+    if isinstance(in_port.type, ArrayType):
+        if in_port.type.is_output_array:
+            port.type.is_output_array = True
+            if not port.in_port:
+                port.node.mark_heap_allocation()

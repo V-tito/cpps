@@ -3,11 +3,11 @@
 """
 Type for code generator
 """
+
 import re
 import json
 import llvmlite.ir as ll
 import ctypes as ct
-
 
 # from .codegen_state import global_no_error
 """Type classes have load_from_json_code and save_to_json_code
@@ -65,39 +65,22 @@ class Type:
     def to_ctype(self, value):
         return self.ctype(value)
 
-    """def save_to_json_code(self, target_object, object_):
-        if global_no_error:
-            return f"{target_object} = {object_};"
-        else:
-            return f'if ({object_}.error) {target_object} = "ERROR"; else {target_object} = {object_};"""
-
 
 class IntegerType(Type):
     __llvm_type__ = ll.IntType(64)
     ctype = ct.c_int64
-
     fmt = "%ld"
-
-    '''def load_from_json_code(self, name, src_object):
-        return f"{self.cpp_type} {name} = {src_object}.asInt();"'''
 
 
 class RealType(Type):
     __llvm_type__ = ll.DoubleType()
     ctype = ct.c_double
-
     fmt = "%f"
-
-    '''def load_from_json_code(self, name, src_object):
-        return f"{self.cpp_type} {name} = {src_object}.asFloat();"'''
 
 
 class BooleanType(Type):
     __llvm_type__ = ll.IntType(1)
     ctype = ct.c_bool
-    '''def load_from_json_code(self, name, src_object):
-        return f"{self.cpp_type} {name} = {src_object}.asBool();"'''
-
     fmt = "%d"
 
 
@@ -108,13 +91,14 @@ def remove_spec_symbols(string):
 class ArrayType(Type):
     count = 0  # default element count todo determine by optimizer
     ctypes_ = []
+    is_output_array = False
 
     def llvm_type(self):
         return ll.ArrayType(
             (
                 self.element.llvm_type()
                 if not isinstance(self.element, ArrayType)
-                else ll.PointerType()
+                else ll.LiteralStructType([ll.PointerType(), ll.IntType(32)])
             ),
             self.count,
         )
@@ -178,22 +162,27 @@ class ArrayType(Type):
         with irbuilder.goto_block(array_loop_block):
             elem_ptr = irbuilder.gep(
                 arr_ptr,
-                [ll.Constant(ll.IntType(32), 0), i],
-                source_etype=ll.ArrayType(
+                [i],  # ll.Constant(ll.IntType(32), 0),
+                source_etype=(
+                    self.element.llvm_type()
+                    if not isinstance(self.element, ArrayType)
+                    else ll.LiteralStructType([ll.PointerType(), ll.IntType(32)])
+                ),
+            )
+            """ll.ArrayType(
                     (
                         self.element.llvm_type()
                         if not isinstance(self.element, ArrayType)
-                        else ll.PointerType()
+                        else ll.LiteralStructType([ll.PointerType(), ll.IntType(32)])
                     ),
                     self.count,
-                ),
-            )
+                ),"""
             elem = irbuilder.load(
                 elem_ptr,
                 typ=(
                     self.element.llvm_type()
                     if not isinstance(self.element, ArrayType)
-                    else ll.PointerType()
+                    else ll.LiteralStructType([ll.PointerType(), ll.IntType(32)])
                 ),
             )
             self.element.add_printf(irbuilder, printf, elem)
@@ -207,29 +196,31 @@ class ArrayType(Type):
     def add_printf(self, irbuilder, printf, val, label=None):
         str_val = f"{label}: [\00" if label else "[\00"
         printf_str(irbuilder, printf, str_val)
-        valtype = self.make_dope_struct_type()
-        arr_ptr = irbuilder.load(
+        # valtype = self.make_dope_struct_type()
+        arr_ptr = irbuilder.extract_value(val, 0)
+        """irbuilder.load(
             irbuilder.gep(
                 val,
                 [ll.Constant(ll.IntType(32), 0), ll.Constant(ll.IntType(32), 0)],
                 source_etype=valtype,
             ),
             typ=ll.PointerType(),
-        )
-        count = irbuilder.load(
+        )"""
+        count = irbuilder.extract_value(val, 1)
+        """irbuilder.load(
             irbuilder.gep(
                 val,
                 [ll.Constant(ll.IntType(32), 0), ll.Constant(ll.IntType(32), 1)],
                 source_etype=valtype,
             ),
             typ=ll.IntType(32),
-        )
+        )"""
         loopf = self.create_loop_func(irbuilder, printf)
         irbuilder.call(loopf, [arr_ptr, count])
         str_val = "]\00"
         printf_str(irbuilder, printf, str_val)
 
-    def print_arr(self, ptr):
+    """    def print_arr(self, ptr):
         dope_struct = ptr[0]
         arr_ptr = dope_struct.ptr
         count = dope_struct.count
@@ -241,7 +232,7 @@ class ArrayType(Type):
             else:
                 res += str(elem) + " "
         res += "\n"
-        return res
+        return res"""  # idk
 
     def convert_top_level_array(self, vals):
         if not self.ctypes_:
@@ -254,11 +245,8 @@ class ArrayType(Type):
                 dope_struct = RecordType.make_ctypes_struct(
                     [("ptr", underlying_ptr), ("count", ct.c_long)]
                 )
-                ptr = ct.POINTER(dope_struct)
-                underlying_ctypes.append(
-                    (dope_struct, ptr, prev_arr_type, underlying_ptr)
-                )
-                prev_ctype = ptr
+                underlying_ctypes.append((dope_struct, prev_arr_type, underlying_ptr))
+                prev_ctype = dope_struct
                 self.ctypes_ = underlying_ctypes
         try:
             return self.convert_array(vals, self.ctypes_)
@@ -275,28 +263,28 @@ class ArrayType(Type):
         else:
             for val in vals:
                 converted_elems.append(self.element.to_ctype(val))
-        underlying_val = ctypes_[self.dimensions() - 1][2](*converted_elems)
-        val_ptr = ctypes_[self.dimensions() - 1][3](underlying_val)
+        underlying_val = ctypes_[self.dimensions() - 1][1](*converted_elems)
+        val_ptr = ctypes_[self.dimensions() - 1][2](underlying_val)
         dope_struct = ctypes_[self.dimensions() - 1][0](
             val_ptr, ct.c_long(len(converted_elems))
         )
-        ptr = ctypes_[self.dimensions() - 1][1](dope_struct)
-        return ptr
+        return dope_struct
 
+    # for cpp input
     def to_ctype(self, values):
         return self.convert_top_level_array(values)
 
+    # potentially for return without printing main
     def make_retval(self):
         if type(self.element) != ArrayType:
             prev_arr_type = self.element.ctype
-            underlying_ptr = ct.POINTER(prev_arr_type)
-            dope_struct = RecordType.make_ctypes_struct(
-                [("ptr", underlying_ptr), ("count", ct.c_long)]
-            )
-            ptr = ct.POINTER(dope_struct)
-            return ptr
         else:
-            return
+            prev_arr_type = self.element.make_retval()
+        underlying_ptr = ct.POINTER(prev_arr_type)
+        dope_struct = RecordType.make_ctypes_struct(
+            [("ptr", underlying_ptr), ("count", ct.c_long)]
+        )
+        return dope_struct
 
     def dimensions(self):
         return 1 + (
@@ -312,9 +300,6 @@ class ArrayType(Type):
         )
 
     # MIGHT COME IN HANDY again to make dope str types; however, they're all the same with opaque ptrs
-    def make_dope_struct_type(self):
-        res = ll.LiteralStructType([ll.PointerType(), ll.IntType(32)])
-        return res
 
     """def load_from_json_code(self, name, src_object):
         from .cpp.cpp_codegen import indent_cpp
@@ -480,49 +465,6 @@ class RecordType(Type):
         str_val = "}\n\00"
         printf_str(irbuilder, printf, str_val)
 
-    '''def get_struct(self):
-        """returns a C++ struct based on this record"""
-
-        if hash(self) not in RecordType.cpp_structs:
-            name = "record" + str(len(RecordType.cpp_structs))
-            struct_str = get_struct_string(name, self.fields)
-            RecordType.cpp_structs[hash(self)] = dict(name=name, string=struct_str)
-        return RecordType.cpp_structs[hash(self)]
-
-
-    
-
-    # declare struct and put it on the list "bool" if global_no_error else
-    # use it as type
-    def load_from_json_code(self, name, src_object):
-        ret_str = "\n".join(
-            [
-                type_.load_from_json_code(
-                    name + f"_{field}", src_object + f'["{field}"]'
-                )
-                for field, type_ in self.fields.items()
-            ]
-        )
-        ret_str += "\n" + self.get_struct()["name"] + " " + name + ";"
-        ret_str += "\n" + "\n".join(
-            [
-                f"{name}.{field} = {name}_{field};"
-                for field, type_ in self.fields.items()
-            ]
-        )
-
-        return ret_str
-
-    def save_to_json_code(self, target_object, object_):
-        return "\n".join(
-            [
-                type_.save_to_json_code(
-                    target_object + f'["{field}"]', object_ + f".{field}"
-                )
-                for field, type_ in self.fields.items()
-            ]
-        )'''
-
 
 type_map = {
     "integer": IntegerType,
@@ -551,3 +493,7 @@ def get_type(type_data: dict):
 def get_integer():
     """helper for creating indices"""
     return IntegerType({"name": "integer", "location": "not applicable"})
+
+
+def get_array_descriptor():
+    return ll.LiteralStructType([ll.PointerType(), ll.IntType(32)])

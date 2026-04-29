@@ -3,11 +3,13 @@ from ..llvm.llvm_codegen import llvm_eval
 from ..error import CodeGenError
 from ..edge import get_src_node
 from ..port import copy_port_values, copy_port_labels
-from ..type import ArrayType
+from ..type import ArrayType, get_array_descriptor
 
 # from ..cpp import template
 # from ..codegen_state import global_no_error
 import llvmlite.ir as ll
+
+array_descriptor_type = get_array_descriptor()
 
 
 class LoopExpression(Node):
@@ -18,7 +20,6 @@ class LoopExpression(Node):
 
     def __init__(self, data):
         super().__init__(data)
-        LoopExpression.count += 1
         self.reduction_values = []
         self.reduction_operators = []
         self.private_vars = []
@@ -40,6 +41,61 @@ class LoopExpression(Node):
                 retval += node.out_ports
         return retval
 
+    def propagate_loop_func_args(self, dst_ports):
+        for d_p in dst_ports:
+            try:
+                d_p.value = next(
+                    s_p[1]
+                    for s_p in zip(self.in_ports, self.loop_func.args)
+                    if s_p[0].label == d_p.label
+                )
+            except:
+                # print(d_p.label, d_p.node)
+                # print(list(s_p.label for s_p in src_ports))
+                # print()
+                pass
+
+    def propagate_loop_func_args_to_children(self, irbuilder: ll.IRBuilder):
+        """Copy values assigned to ports between child nodes.
+        ex. if variable was created in init, it must be copied to
+        body and reduction, etc.
+        """
+        # Init's input values are added separately because the class
+        # is shared between Loop and Let:
+        if self.init:
+            self.propagate_loop_func_args(self.init.in_ports[-len(self.in_ports) :])
+            irbuilder.position_at_start(self.entry)
+            self.init.to_llvm(irbuilder)
+
+        if self.range_gen:
+            self.propagate_loop_func_args(
+                self.range_gen.in_ports[-len(self.in_ports) :]
+            )
+            self.range_gen.to_llvm(irbuilder)
+
+        if self.body:
+            copy_port_values(
+                self.get_out_ports_list([self.range_gen, self.init]), self.body.in_ports
+            )
+            self.propagate_loop_func_args(self.body.in_ports[-len(self.in_ports) :])
+            self.body.to_llvm(irbuilder)
+
+        if self.condition:
+            self.propagate_loop_func_args(
+                self.condition.in_ports[-len(self.in_ports) :]
+            )
+            copy_port_values(
+                self.get_out_ports_list([self.body]), self.condition.in_ports
+            )
+            self.condition.to_llvm(irbuilder)
+
+        copy_port_values(
+            self.get_out_ports_list([self.body, self.range_gen, self.init]),
+            self.returns.in_ports,
+        )
+
+        self.propagate_loop_func_args(self.returns.in_ports[-len(self.in_ports) :])
+
     def copy_port_values_to_children(self, irbuilder: ll.IRBuilder):
         """Copy values assigned to ports between child nodes.
         ex. if variable was created in init, it must be copied to
@@ -49,7 +105,7 @@ class LoopExpression(Node):
         # is shared between Loop and Let:
         if self.init:
             copy_port_values(self.in_ports, self.init.in_ports[-len(self.in_ports) :])
-            irbuilder.position_at_start(self.predecessor)
+            irbuilder.position_at_start(self.entry)
             self.init.to_llvm(irbuilder)
 
         if self.range_gen:
@@ -86,20 +142,21 @@ class LoopExpression(Node):
         # create a comment containing names of variables being calculated
         # in the loop:
         result_vars_list = ", ".join(port.label for port in self.out_ports)
-        self.predecessor = irbuilder.block
-        args = [
+        LoopExpression.count += 1
+        argtypes = [
             (
                 port.type.llvm_type()
                 if not isinstance(port.type, ArrayType)
-                else ll.PointerType()
+                else array_descriptor_type
             )
             for port in self.in_ports
         ]
+        args = [port.value for port in self.in_ports]
         ret_types = [
             (
                 port.type.llvm_type()
                 if not isinstance(port.type, ArrayType)
-                else ll.PointerType()
+                else array_descriptor_type
             )
             for port in self.out_ports
         ]
@@ -111,41 +168,66 @@ class LoopExpression(Node):
                 ret_type = ret_types[0]
             else:
                 ret_type = ll.LiteralStructType(ret_types)
-        # self.loop_func_type = ll.FunctionType()
-        self.header = irbuilder.append_basic_block(
+        self.loop_func_type = ll.FunctionType(ret_type, argtypes)
+        self.loop_func = ll.Function(
+            irbuilder.module, self.loop_func_type, name=f"Loop_{LoopExpression.count}"
+        )
+        self.parent_func = irbuilder.function
+        self.predecessor = irbuilder.block
+        self.entry = self.loop_func.append_basic_block(
+            name=f"Loop_{LoopExpression.count}_entry"
+        )
+        self.header = self.loop_func.append_basic_block(
             name=f"Loop_{LoopExpression.count}_header"
         )
-        self.loop_body_block = irbuilder.append_basic_block(
+        self.loop_body_block = self.loop_func.append_basic_block(
             name=f"Loop_{LoopExpression.count}_body"
         )
-        self.latch = irbuilder.append_basic_block(
+        self.latch = self.loop_func.append_basic_block(
             name=f"Loop_{LoopExpression.count}_latch"
         )
-        self.follower = irbuilder.append_basic_block(
+        self.follower = self.loop_func.append_basic_block(
             name=f"Loop_{LoopExpression.count}_follower"
         )  # ret would be in here
         self.phi_vars = []
 
-        self.copy_port_values_to_children(irbuilder)
+        self.propagate_loop_func_args_to_children(irbuilder)
 
         copy_port_labels(self.out_ports, self.returns.out_ports)
 
         # add a reference to the loop to eachReduction node within Returns node:
         self.returns.copy_loop_object_to_all_reductions(self)
 
-        for o_p, r_o_p in zip(self.out_ports, self.returns.out_ports):
-            # тут надо будет распаковывать возвращаемые значения функции. load(gep) и вот это вот всё
-            # сначала в follower-е идет упаковка редукций в структурку (если массивы есть, то их разместить на куче)
-            # потом в активном блоке распаковка значений из структурки
-            # calculate out-ports' values
-            o_p.value = llvm_eval(r_o_p, irbuilder)
-        if not (self.predecessor.is_terminated):
-            with irbuilder.goto_block(self.predecessor):
+        if not (self.entry.is_terminated):
+            with irbuilder.goto_block(self.entry):
                 irbuilder.branch(self.header)
         if not (self.latch.is_terminated):
             with irbuilder.goto_block(self.latch):
                 irbuilder.branch(self.header)
-        irbuilder.position_at_end(self.follower)
+
+        if len(ret_types) > 1:
+            results = []
+            for r_o_p in self.returns.out_ports:
+                results.append(llvm_eval(r_o_p, irbuilder))
+            result = ret_type(results)
+            irbuilder.position_at_end(self.follower)
+            irbuilder.ret(result)
+        elif len(ret_types) == 1:
+            result = llvm_eval(self.returns.out_ports[0], irbuilder)
+            irbuilder.position_at_end(self.follower)
+            irbuilder.ret(result)
+        else:
+            irbuilder.position_at_end(self.follower)
+            irbuilder.ret_void()
+        irbuilder.position_at_end(self.predecessor)
+        res = irbuilder.call(self.loop_func, args)
+        if len(self.out_ports) > 1:
+            for id, o_p in enumerate(self.out_ports):
+                o_p.value = irbuilder.extract_value(res, id)
+        elif len(self.out_ports) == 1:
+            self.out_ports[0].value = res
+        else:
+            pass
 
 
 class Body(Node):
@@ -186,13 +268,26 @@ class Reduction(Node):
         # with goto и header будет в loop func
         if self.operator == "array":
             with irbuilder.goto_block(self.loop_object.header):
-                ptr = irbuilder.alloca(self.out_ports[0].type.llvm_type())
-                record_type = ll.LiteralStructType([ll.PointerType(), ll.IntType(32)])
-                reduction_value = irbuilder.alloca(record_type, name="reduction_array")
-                addr = irbuilder.gep(
+                elemtyp = (
+                    self.out_ports[0].type.element.llvm_type()
+                    if not isinstance(self.out_ports[0].type.element, ArrayType)
+                    else array_descriptor_type
+                )
+                zero = ll.Constant(ll.IntType(32), 0)
+                ptr = irbuilder.alloca(elemtyp, zero)
+
+                reduction_value = ll.Constant(array_descriptor_type, None)
+                reduction_value = irbuilder.insert_value(reduction_value, ptr, 0)
+                reduction_value = irbuilder.insert_value(
+                    reduction_value,
+                    zero,
+                    1,
+                    name="reduction_array",
+                )
+                """addr = irbuilder.gep(
                     reduction_value,
                     [ll.Constant(ll.IntType(32), 0), ll.Constant(ll.IntType(32), 0)],
-                    source_etype=record_type,
+                    source_etype=array_descriptor_type,
                 )
                 int_ = irbuilder.ptrtoint(addr, ll.IntType(64))
                 addr = irbuilder.inttoptr(int_, ll.PointerType())
@@ -200,11 +295,11 @@ class Reduction(Node):
                 count = irbuilder.gep(
                     reduction_value,
                     [ll.Constant(ll.IntType(32), 0), ll.Constant(ll.IntType(32), 1)],
-                    source_etype=record_type,
+                    source_etype=array_descriptor_type,
                 )
                 int_ = irbuilder.ptrtoint(count, ll.IntType(64))
                 count = irbuilder.inttoptr(int_, ll.PointerType())
-                irbuilder.store(ll.Constant(ll.IntType(32), 0), count)
+                irbuilder.store(ll.Constant(ll.IntType(32), 0), count)"""
         else:
             irbuilder.position_at_start(self.loop_object.header)
             reduction_value = irbuilder.phi(self.in_ports[1].type.llvm_type())
@@ -213,21 +308,21 @@ class Reduction(Node):
             if self.operator == "sum":
                 reduction_value.add_incoming(
                     ll.Constant(self.in_ports[1].type.llvm_type(), 0),
-                    self.loop_object.predecessor,
+                    self.loop_object.entry,
                 )
                 self.loop_object.reduction_values += [next_reduction_value]
                 self.loop_object.reduction_operators = ["sis_sum"]
             elif self.operator == "product":
                 reduction_value.add_incoming(
                     ll.Constant(self.in_ports[1].type.llvm_type(), 1),
-                    self.loop_object.predecessor,
+                    self.loop_object.entry,
                 )
                 self.loop_object.reduction_values += [next_reduction_value]
                 self.loop_object.reduction_operators = ["sis_product"]
             else:
                 reduction_value.add_incoming(
                     ll.Constant(self.in_ports[1].type.llvm_type(), 1),
-                    self.loop_object.predecessor,
+                    self.loop_object.entry,
                 )
 
         with irbuilder.goto_block(self.loop_object.loop_body_block):
@@ -239,9 +334,10 @@ class Reduction(Node):
             with irbuilder.goto_block(then):
                 if self.operator == "array":
                     counter = irbuilder.add(
-                        irbuilder.load(count, typ=ll.IntType(32)),
+                        irbuilder.extract_value(reduction_value, 1),
                         ll.Constant(ll.IntType(32), 1),
                     )
+                    new_arr = irbuilder.alloca(elemtyp, counter)
                     new_elem = irbuilder.gep(
                         ptr,
                         [
@@ -250,8 +346,10 @@ class Reduction(Node):
                         ],
                         source_etype=ptr.allocated_type,
                     )
+                    int_ = irbuilder.ptrtoint(new_elem, ll.IntType(64))
+                    new_elem = irbuilder.inttoptr(int_, ll.PointerType())
                     irbuilder.store(input_value, new_elem)
-                    irbuilder.store(counter, count)
+                    irbuilder.insert_value(reduction_value, counter, 1)
                 else:
                     if self.operator == "value":
                         new_value = input_value
@@ -289,14 +387,15 @@ class Reduction(Node):
                                     "Failed to recognize reduction value type"
                                 )
                     next_reduction_value.add_incoming(new_value, then)
-                    irbuilder.branch(self.loop_object.latch)
-                    # emit instructions for when the predicate is true
+                irbuilder.branch(self.loop_object.latch)
+                # emit instructions for when the predicate is true
             with irbuilder.goto_block(otherwise):
                 if self.operator != "array":
                     new_value = reduction_value
                     next_reduction_value.add_incoming(new_value, otherwise)
                 irbuilder.branch(self.loop_object.latch)
-        reduction_value.add_incoming(next_reduction_value, self.loop_object.latch)
+        if self.operator != "array":
+            reduction_value.add_incoming(next_reduction_value, self.loop_object.latch)
 
         self.out_ports[0].value = reduction_value
 
@@ -308,10 +407,10 @@ class RangeGen(Node):
         # out ports go like var, var1_index, var2, var2_index, e.t.c.
         self.name_child_ports()
         # copy LoopExpression's input values:
-        for i_p, loop_i_p in zip(
+        """for i_p, loop_i_p in zip(
             self.in_ports, self.loop_object.in_ports
         ):  # here it wouldn't be in ports but FUNC ARGS!
-            i_p.value = loop_i_p.value
+            i_p.value = loop_i_p.value"""
         for o_p in self.out_ports:
             # assuming it's always a Scatter Node
             scatter = get_src_node(o_p)
@@ -347,10 +446,10 @@ class Scatter(Node):
                     name=self.out_ports[0].label,
                 )
                 self.out_ports[0].value.add_incoming(
-                    left, self.loop_object.predecessor
+                    left, self.loop_object.entry
                 )  # тут будет func entry
                 self.out_ports[1].value.add_incoming(  # STUB!
-                    left, self.loop_object.predecessor
+                    left, self.loop_object.entry
                 )
                 with irbuilder.goto_block(self.loop_object.latch):
                     element = irbuilder.add(
@@ -381,9 +480,7 @@ class PreCondition(Condition):
             for i_p in self.in_ports:
                 if i_p.label in self.loop_object.phi_vars:
                     new_value = irbuilder.phi(i_p.type.llvm_type())
-                    new_value.add_incoming(
-                        i_p.value, self.loop_object.predecessor
-                    )  # entry
+                    new_value.add_incoming(i_p.value, self.loop_object.entry)  # entry
                     new_value.add_incoming(
                         next(
                             o_p.value
@@ -406,12 +503,12 @@ class PostCondition(Condition):
         with irbuilder.goto_block(self.loop_object.header):
             cond = irbuilder.phi(ll.IntType(1))
             cond.add_incoming(
-                ll.Constant(ll.IntType(1), 0), self.loop_object.predecessor  # entry
+                ll.Constant(ll.IntType(1), 0), self.loop_object.entry  # entry
             )
             for i_p in self.in_ports:
                 if i_p.label in self.loop_object.phi_vars:
                     new_value = irbuilder.phi(i_p.type.llvm_type())
-                    new_value.add_incoming(i_p.value, self.loop_object.predecessor)
+                    new_value.add_incoming(i_p.value, self.loop_object.entry)
                     new_value.add_incoming(
                         next(
                             o_p.value
@@ -421,12 +518,13 @@ class PostCondition(Condition):
                         self.loop_object.latch,
                     )
                     i_p.value = new_value
-            cond.add_incoming(
-                llvm_eval(self.out_ports[0], irbuilder), self.loop_object.latch
-            )
             irbuilder.cbranch(
                 cond, self.loop_object.loop_body_block, self.loop_object.follower
             )
+        irbuilder.position_at_start(self.loop_object.latch)
+        cond.add_incoming(
+            llvm_eval(self.out_ports[0], irbuilder), self.loop_object.latch
+        )
 
 
 class OldValue(Node):

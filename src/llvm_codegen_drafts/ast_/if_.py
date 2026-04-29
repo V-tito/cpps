@@ -4,8 +4,9 @@
 code generator if
 """
 from ..node import Node, to_llvm_method
-from ..llvm.llvm_codegen import llvm_eval, BranchCount
+from ..llvm.llvm_codegen import llvm_eval, BranchCount, heap_allocation_helper
 import llvmlite.ir as ll
+from ..type import ArrayType
 
 
 class If(Node):
@@ -28,6 +29,20 @@ class If(Node):
                 irbuilder.position_at_start(then_block)
                 self.branches[index].to_llvm(self, o_p, irbuilder, follower)
         irbuilder.position_at_end(follower)
+
+    def mark_heap_allocation(self):
+        for br in self.branches:
+            for o_p, b_o_p in zip(self.out_ports, br.out_ports):
+                if isinstance(o_p.type, ArrayType):
+                    if o_p.type.is_output_array:
+                        b_o_p.type.is_output_array
+                        heap_allocation_helper(b_o_p)
+            for i_p in self.in_ports:
+                b_i_p = next(port for port in br.in_ports if port.label == i_p.label)
+                if isinstance(b_i_p.type, ArrayType):
+                    if b_i_p.type.is_output_array:
+                        i_p.type.is_output_array = True
+                        heap_allocation_helper(i_p)
 
 
 class Branch(Node):
