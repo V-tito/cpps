@@ -149,12 +149,10 @@ class BranchCount:
 
 
 def llvm_eval(in_port, irbuilder):
-    current_block = irbuilder.block
     port = Edge.edge_to[in_port.id].from_
     if port.value is None:
         port.node.to_llvm(irbuilder)
     in_port.value = port.value
-    irbuilder.goto_block(current_block)
     return port.value
 
 

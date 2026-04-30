@@ -8,20 +8,12 @@ import re
 import json
 import llvmlite.ir as ll
 import ctypes as ct
+from .llvm.llvmlite_helpers import printf_str
 
 # from .codegen_state import global_no_error
 """Type classes have load_from_json_code and save_to_json_code
  methods. They return C++ code for those corresponding purposes
 """
-
-
-def printf_str(irbuilder, printf, str_val):
-    c_str_val = ll.Constant(
-        ll.ArrayType(ll.IntType(8), len(str_val)), bytearray(str_val.encode("utf-8"))
-    )
-    c_str = irbuilder.alloca(c_str_val.type)
-    irbuilder.store(c_str_val, c_str)
-    irbuilder.call(printf, [c_str])
 
 
 class Type:
@@ -169,14 +161,6 @@ class ArrayType(Type):
                     else ll.LiteralStructType([ll.PointerType(), ll.IntType(32)])
                 ),
             )
-            """ll.ArrayType(
-                    (
-                        self.element.llvm_type()
-                        if not isinstance(self.element, ArrayType)
-                        else ll.LiteralStructType([ll.PointerType(), ll.IntType(32)])
-                    ),
-                    self.count,
-                ),"""
             elem = irbuilder.load(
                 elem_ptr,
                 typ=(
@@ -198,23 +182,9 @@ class ArrayType(Type):
         printf_str(irbuilder, printf, str_val)
         # valtype = self.make_dope_struct_type()
         arr_ptr = irbuilder.extract_value(val, 0)
-        """irbuilder.load(
-            irbuilder.gep(
-                val,
-                [ll.Constant(ll.IntType(32), 0), ll.Constant(ll.IntType(32), 0)],
-                source_etype=valtype,
-            ),
-            typ=ll.PointerType(),
-        )"""
+
         count = irbuilder.extract_value(val, 1)
-        """irbuilder.load(
-            irbuilder.gep(
-                val,
-                [ll.Constant(ll.IntType(32), 0), ll.Constant(ll.IntType(32), 1)],
-                source_etype=valtype,
-            ),
-            typ=ll.IntType(32),
-        )"""
+
         loopf = self.create_loop_func(irbuilder, printf)
         irbuilder.call(loopf, [arr_ptr, count])
         str_val = "]\00"
@@ -299,56 +269,6 @@ class ArrayType(Type):
             else self.element
         )
 
-    # MIGHT COME IN HANDY again to make dope str types; however, they're all the same with opaque ptrs
-
-    """def load_from_json_code(self, name, src_object):
-        from .cpp.cpp_codegen import indent_cpp
-
-        index_name = "index_for_" + remove_spec_symbols(name)
-        item_name = "item_for_" + remove_spec_symbols(name)
-        retval = (
-            f"{self.cpp_type} {name};\n"
-            f"for(unsigned int {index_name} = 0;\n"
-            f"{index_name} < {src_object}.size();\n++{index_name})\n"
-            "{\n"
-            + indent_cpp(
-                self.element.load_from_json_code(
-                    item_name, (f"{src_object}" f"[{index_name}]")
-                )
-                + f"\n{name}.push_back({item_name});"
-            )
-            + "\n}"
-        )
-
-        return retval
-
-    def save_to_json_code(self, target_object, object_):
-        from .cpp.cpp_codegen import indent_cpp
-
-        index = "index_for_" + remove_spec_symbols(target_object)
-        item_name = "item_for_" + remove_spec_symbols(target_object)
-
-        return (
-            (
-                f"if ({object_}.error)"
-                "{\n" + indent_cpp(f'{target_object}="ERROR";') + "\n}\nelse\n"
-            )
-            * (not global_no_error)
-            + f"for(unsigned int {index} = 0;\n"
-            f"    {index} < size({object_});"
-            f"\n    ++{index})"
-            "\n{\n"
-            + indent_cpp(f"Json::Value {item_name};")
-            + "\n"
-            + indent_cpp(
-                self.element.save_to_json_code(item_name, object_ + f"[{index}]")
-            )
-            + "\n"
-            + indent_cpp(f"{target_object}.append({item_name});")
-            + "\n}"
-        )
-"""
-
 
 class StreamType(Type):
     @property
@@ -363,22 +283,6 @@ class AnyType(Type):
     @property
     def cpp_type(self):
         return "auto"
-
-
-"""def get_struct_string(name: str, fields: list[str]):
-    from .cpp.cpp_codegen import indent_cpp
-
-    set_error_code = (
-        "\nvoid set_error(){\n"
-        + ";\n".join([str(field) + ".set_error()" for field, _ in fields.items()])
-        + ";\n}"
-    )
-    extra = ("bool error;" + set_error_code) * (not global_no_error)
-    field_defs = "\n".join(
-        [f"{str(type_.cpp_type)} {str(field)};" for field, type_ in fields.items()]
-    )
-    return "struct " + name + "{\n" + indent_cpp(field_defs + "\n" + extra) + "\n};"
-"""
 
 
 class RecordType(Type):
