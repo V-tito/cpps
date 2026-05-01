@@ -37,7 +37,9 @@ class ArrayInit(Node):
         type_ = self.out_ports[0].type
         items = [llvm_eval(i_p, irbuilder) for i_p in self.in_ports]
         type_.count = len(items)
-        arg = calc_memsize_at_runtime(irbuilder, type_.llvm_type(), 1)
+        arg = calc_memsize_at_runtime(
+            irbuilder, type_.element.llvm_type(), type_.count
+        )  # here either elemtype+count or get raw
         ptr = irbuilder.call(
             irbuilder.module.malloc,
             [arg],
@@ -46,11 +48,7 @@ class ArrayInit(Node):
         parent_function.mallocs.add(ptr)
         if self.out_ports[0].type.is_output_array:
             parent_function.preserved_mallocs.add(ptr)
-        etyp = (
-            type_.element.llvm_type()
-            if not isinstance(type_.element, ArrayType)
-            else get_array_descriptor()
-        )
+        etyp = type_.element.llvm_type()
         for index, item in enumerate(items):
             indexIR = i32constant(index)
             target = irbuilder.gep(

@@ -69,6 +69,17 @@ class Binary(Node):
         else:
             label = ""
 
+        # error handling; prev errcond set during llvm_eval
+        errcond = irbuilder.or_(
+            self.in_ports[0].error_cond, self.in_ports[1].error_cond
+        )
+        if self.operator == "/":
+            zero_division = (
+                irbuilder.icmp_signed("==", right, right.type(0))
+                if isintr
+                else irbuilder.fcmp_unordered("==", right, right.type(0))
+            )
+
         if isintl and isintr:
             res = int_operator_map[operator](left, right, label)
         else:
