@@ -230,26 +230,15 @@ class Reduction(Node):
         )
         self.loop_object.reduction_count += 1
         irbuilder.position_at_start(self.loop_object.header)
-        reduction_value = irbuilder.phi(
-            self.out_ports[0].type.llvm_type()
-            if not isinstance(self.out_ports[0].type, ArrayType)
-            else array_descriptor_type
-        )
+        reduction_value = irbuilder.phi(self.out_ports[0].type.llvm_type())
         irbuilder.position_at_start(redval_init_block)
-        next_reduction_value = irbuilder.phi(
-            self.out_ports[0].type.llvm_type()
-            if not isinstance(self.out_ports[0].type, ArrayType)
-            else array_descriptor_type
-        )
+        next_reduction_value = irbuilder.phi(self.out_ports[0].type.llvm_type())
         # currently heap-allocates everything; perhaps, a ggod approach
         if self.operator == "array":
             parent_function = self.get_containing_function()
             with irbuilder.goto_block(self.loop_object.entry):
-                elemtyp = (
-                    self.out_ports[0].type.element.llvm_type()
-                    if not isinstance(self.out_ports[0].type.element, ArrayType)
-                    else array_descriptor_type
-                )
+                elemtyp = self.out_ports[0].type.element.llvm_type()
+
                 len = i32(self.default_arr_size)
                 if self.loop_object.ranged:
                     # TODO narrow this check to int range with >=1 step!
@@ -527,7 +516,9 @@ class PreCondition(Condition):
         with irbuilder.goto_block(self.loop_object.header):
             for i_p in self.in_ports:
                 if i_p.label in self.loop_object.phi_vars:
-                    new_value = irbuilder.phi(i_p.type.llvm_type())
+                    new_value = irbuilder.phi(
+                        i_p.type.llvm_type()
+                    )  # perhaps needs array consideration
                     new_value.add_incoming(i_p.value, self.loop_object.entry)  # entry
                     new_value.add_incoming(
                         next(
@@ -555,7 +546,9 @@ class PostCondition(Condition):
             )
             for i_p in self.in_ports:
                 if i_p.label in self.loop_object.phi_vars:
-                    new_value = irbuilder.phi(i_p.type.llvm_type())
+                    new_value = irbuilder.phi(
+                        i_p.type.llvm_type()
+                    )  # wtf this even is? consider arrays
                     new_value.add_incoming(i_p.value, self.loop_object.entry)
                     new_value.add_incoming(
                         next(

@@ -20,7 +20,7 @@ class RecordAccess(Node):
             pointer = irbuilder.gep(
                 record,
                 [ll.Constant(ll.IntType(32), 0), indices[self.field]],
-                # source_etype=self.out_ports[0].type.llvm_type()
+                source_etype=self.out_ports[0].type.llvm_type(),
             )
             # Cloud Sisal Arrays' indices start from 1 by default
             # hence the {index}-1

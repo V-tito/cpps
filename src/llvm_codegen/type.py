@@ -86,12 +86,11 @@ class ArrayType(Type):
     is_output_array = False
 
     def llvm_type(self):
+        return get_array_descriptor()
+
+    def raw_type(self):
         return ll.ArrayType(
-            (
-                self.element.llvm_type()
-                if not isinstance(self.element, ArrayType)
-                else ll.LiteralStructType([ll.PointerType(), ll.IntType(32)])
-            ),
+            self.element.llvm_type(),
             self.count,
         )
 
@@ -155,20 +154,9 @@ class ArrayType(Type):
             elem_ptr = irbuilder.gep(
                 arr_ptr,
                 [i],  # ll.Constant(ll.IntType(32), 0),
-                source_etype=(
-                    self.element.llvm_type()
-                    if not isinstance(self.element, ArrayType)
-                    else ll.LiteralStructType([ll.PointerType(), ll.IntType(32)])
-                ),
+                source_etype=self.element.llvm_type(),
             )
-            elem = irbuilder.load(
-                elem_ptr,
-                typ=(
-                    self.element.llvm_type()
-                    if not isinstance(self.element, ArrayType)
-                    else ll.LiteralStructType([ll.PointerType(), ll.IntType(32)])
-                ),
-            )
+            elem = irbuilder.load(elem_ptr, typ=self.element.llvm_type())
             self.element.add_printf(irbuilder, printf, elem)
             new_i = irbuilder.add(i, ll.Constant(ll.IntType(32), 1))
             i.add_incoming(new_i, array_loop_block)
