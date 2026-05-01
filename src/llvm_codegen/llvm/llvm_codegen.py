@@ -28,6 +28,11 @@ class LlModule(ll.Module):
             ll.FunctionType(ll.PointerType(), [ll.PointerType(), ll.IntType(64)]),
             name="realloc",
         )
+        self.free = ll.Function(
+            self,
+            ll.FunctionType(ll.VoidType(), [ll.PointerType()]),
+            name="free",
+        )
         self.array_print_loop_count = 0
         for _, f in functions.items():
             f.module = self

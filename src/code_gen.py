@@ -17,22 +17,22 @@ def compile_ir(ir, module_name):
 
 
 def compile_to_llvm(ir, module_name):
-    from llvm_codegen_drafts.parse_ir import parse_ir
-    from llvm_codegen_drafts.llvm.ir_to_llvm import ir_to_llvm
+    from llvm_codegen.parse_ir import parse_ir
+    from llvm_codegen.llvm.ir_to_llvm import ir_to_llvm
 
     functions, definitions = parse_ir(load_json(ir))
     return ir_to_llvm(module_name, functions, definitions)
 
 
 def compile_to_llvm_bitcode(ir, module_name="", target_triple=None):
-    from llvm_codegen_drafts.llvm.ir_to_llvm import ir_to_bitcode
+    from llvm_codegen.llvm.ir_to_llvm import ir_to_bitcode
 
     res = ir_to_bitcode(ir, target_triple)
     return res
 
 
 def run_via_llvmlite(ir, module_name="", target_triple=None, args={}):
-    from llvm_codegen_drafts.llvm.ir_to_llvm import run_through_llvmlite
+    from llvm_codegen.llvm.ir_to_llvm import run_through_llvmlite
 
     return run_through_llvmlite(ir, args)
 

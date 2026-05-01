@@ -39,11 +39,14 @@ class Function(Node):
         super().__init__(data)
         if "dont_register" not in data or not data["dont_register"]:
             Function.functions[self.function_name] = self
+        self.mallocs = set()
+        self.preserved_mallocs = set()
 
     @to_llvm_method
     def to_llvm(self, irbuilder: ll.IRBuilder):
         # mark nodes that contribute to (currently) creating output arrays, so those are preserved during memory freeing
         self.mark_heap_allocation()
+
         # collect ir types corresponding to arg types in a list:
         args = [
             (
@@ -88,9 +91,6 @@ class Function(Node):
             irbuilder.module.set_inputs(
                 {port.label: port.type for port in self.in_ports}
             )
-            # irbuilder.module.set_output(
-            #    {port.label: port.type for port in self.out_ports}
-            # )
         # assign arguments to temp vars:
         for port, arg in zip(self.in_ports, func.args):
             port.value = arg
@@ -100,26 +100,21 @@ class Function(Node):
         for index, o_p in enumerate(self.out_ports):
             llvm_eval(o_p, irbuilder)
             ret_vals.append(o_p.value)
+
+        # free heap-allocated memory:
+        mallocs_to_rem = self.mallocs - self.preserved_mallocs
+        for ptr in mallocs_to_rem:
+            irbuilder.call(irbuilder.module.free, [ptr])
+        # form ret value:
         if len(ret_vals) == 1:
             ret_val = ret_vals[0]
         elif isinstance(ret_type, ll.VoidType):
             irbuilder.ret_void()
         else:
-            # zero = ll.Constant(ll.IntType(32), 0)
-            # ptr = irbuilder.alloca(ret_type)
             ret_val = ll.Constant(ret_type, None)
             for index, val in enumerate(ret_vals):
                 ret_val = irbuilder.insert_value(ret_val, val, index)
-                # indexIR = ll.Constant(ll.IntType(32), index)
-                # target = irbuilder.gep(ptr, [zero, indexIR], source_etype=ret_type)
-                # intt = irbuilder.ptrtoint(
-                # target, ll.IntType(64)
-                # )  # to be removed when gep works humanly with opaque ptrs
-                # target = irbuilder.inttoptr(
-                # intt, ll.PointerType()
-                # )  # to be removed when gep works humanly with opaque ptrs
-                # irbuilder.store(val, target)
-            # ret_val = irbuilder.load(ptr, typ=ret_type)
+
         irbuilder.ret(ret_val)
 
         # check if we requested time_out (time limiting) and process that:
@@ -199,7 +194,6 @@ def create_main(irbuilder: ll.IRBuilder):
         for i, o_p in enumerate(main_ir.out_ports):
             val = irbuilder.extract_value(
                 res,
-                # ll.Constant(ll.IntType(32), i),
                 i,
             )
             if i > 0:

@@ -243,6 +243,7 @@ class Reduction(Node):
         )
         # currently heap-allocates everything; perhaps, a ggod approach
         if self.operator == "array":
+            parent_function = self.get_containing_function()
             with irbuilder.goto_block(self.loop_object.entry):
                 elemtyp = (
                     self.out_ports[0].type.element.llvm_type()
@@ -262,6 +263,9 @@ class Reduction(Node):
                     len = irbuilder.trunc(init_len, i32)
                 size = calc_memsize_at_runtime(irbuilder, elemtyp, len)
                 ptr = irbuilder.call(irbuilder.module.malloc, [size])
+                parent_function.mallocs.add(ptr)
+                if self.out_ports[0].type.is_output_array:
+                    parent_function.preserved_mallocs.add(ptr)
                 init_reduction_value = ll.Constant(array_descriptor_type, None)
                 init_reduction_value = irbuilder.insert_value(
                     init_reduction_value, ptr, 0
@@ -343,6 +347,11 @@ class Reduction(Node):
                     new_arr = irbuilder.call(
                         irbuilder.module.realloc, [ptr, new_size_in_bytes]
                     )
+                    parent_function.mallocs.remove(ptr)
+                    parent_function.mallocs.add(new_arr)
+                    if self.out_ports[0].type.is_output_array:
+                        parent_function.preserved_mallocs.remove(ptr)
+                        parent_function.preserved_mallocs.add(new_arr)
                     new_elem = irbuilder.gep(
                         new_arr,
                         [

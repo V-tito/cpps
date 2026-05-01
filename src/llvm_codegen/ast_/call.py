@@ -3,11 +3,13 @@
 """
 code generator call
 """
+
 from ..node import Node
 from ..edge import Edge
 from .function import Function
 import llvmlite.ir as ll
 from ..llvm.llvm_codegen import llvm_eval
+from ..type import ArrayType
 
 
 class FunctionCall(Node):
@@ -22,34 +24,23 @@ class FunctionCall(Node):
             # check if it isn't a built in function:
             if self.callee in Function.functions:
                 called_function = irbuilder.module.get_global(self.callee)
-                # timeout_pragma = called_function.get_pragma("max_time")
-                """if timeout_pragma:
-                    result_name, exec_code = time_limited_execution_llvm(
-                                             Function.functions[self.callee],
-                                             args)
-                    block.add_code(exec_code)
-                    timeout = True"""
 
                 result = None
-
-                """def process_timeout():
-                if timeout:
-                    block.add_code(llvmAssignment(result,
-                                   f"{result_name}.retval"))
-                else:
-                    block.add_code(llvmAssignment(result,
-                                   f"{self.callee}({args})"))"""
+                parent_function = self.get_containing_function()
 
                 # if the function has multiple outputs:
                 if len(self.out_ports) > 1:
                     name = "call_result"
                     result = irbuilder.call(called_function, args, name=name)
-                    # process_timeout()
                     for port_index, o_p in enumerate(self.out_ports):
                         port_result = irbuilder.extract_value(
                             result, port_index, name=f"value_{port_index}"
                         )
                         o_p.value = port_result
+                        if isinstance(o_p.type, ArrayType):
+                            parent_function.mallocs.add(port_result)
+                            if o_p.type.is_output_array:
+                                parent_function.preserved_mallocs.add(port_result)
                 # if the function has one output:
                 else:
                     name = (
@@ -57,8 +48,11 @@ class FunctionCall(Node):
                     )
 
                     result = irbuilder.call(called_function, args, name=name)
-                    # process_timeout()
                     self.out_ports[0].value = result
+                    if isinstance(self.out_ports[0].type, ArrayType):
+                        parent_function.mallocs.add(result)
+                        if self.out_ports[0].type.is_output_array:
+                            parent_function.preserved_mallocs.add(result)
         else:
             FunctionCall.overriden_functions[self.callee](self, irbuilder)
 

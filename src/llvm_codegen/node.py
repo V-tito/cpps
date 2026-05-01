@@ -3,6 +3,7 @@
 """
 code generator node (mostly deserealizing code)
 """
+
 from .port import Port
 from .type import get_type
 from .edge import Edge
@@ -90,12 +91,14 @@ class Node:
                         return br
 
             for sub_node in ["init", "body", "condition", "range_gen", "returns"]:
-                if (
-                    hasattr(node, sub_node)
-                    and hasattr(node.__dict__[sub_node], "nodes")
-                    and self in node.__dict__[sub_node].nodes
-                ):
-                    return sub_node
+                if hasattr(node, sub_node):
+                    if (
+                        hasattr(node.__dict__[sub_node], "nodes")
+                        and self in node.__dict__[sub_node].nodes
+                    ):
+                        return node.__dict__[sub_node]
+                    elif node.__dict__[sub_node] == self:
+                        return node
 
         return None
 

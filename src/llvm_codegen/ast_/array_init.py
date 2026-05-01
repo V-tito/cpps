@@ -42,6 +42,10 @@ class ArrayInit(Node):
             irbuilder.module.malloc,
             [arg],
         )
+        parent_function = self.get_containing_function()
+        parent_function.mallocs.add(ptr)
+        if self.out_ports[0].type.is_output_array:
+            parent_function.preserved_mallocs.add(ptr)
         etyp = (
             type_.element.llvm_type()
             if not isinstance(type_.element, ArrayType)
