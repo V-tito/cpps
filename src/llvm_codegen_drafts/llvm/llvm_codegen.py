@@ -23,6 +23,11 @@ class LlModule(ll.Module):
             ll.FunctionType(ll.PointerType(), [ll.IntType(64)]),
             name="malloc",
         )
+        self.realloc = ll.Function(
+            self,
+            ll.FunctionType(ll.PointerType(), [ll.PointerType(), ll.IntType(64)]),
+            name="realloc",
+        )
         self.array_print_loop_count = 0
         for _, f in functions.items():
             f.module = self

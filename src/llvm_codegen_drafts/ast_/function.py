@@ -8,68 +8,7 @@ from ..node import Node, to_llvm_method
 from ..llvm.llvm_codegen import llvm_eval, LlModule, heap_allocation_helper
 from ..error import CodeGenError
 from ..type import ArrayType, printf_str, get_array_descriptor
-
-# from ..cpp import template
-# from ..codegen_state import global_no_error
 import llvmlite.ir as ll
-
-"""def gen_time_limit_template(function):
-
-    class_template = template.load_template("time_out_class.cpp")
-
-    #generate return values assignments:
-    block = CppBlock()
-
-    arg_vars = ["f->" + i_p.label for i_p in function.in_ports]
-    args = ", ".join(arg_vars)
-
-    block.add_code(CppAssignment("f->retval",
-                                 f"{function.cpp_function_name}({args})"))
-
-    write_retvals = indent_cpp(str(block), 2, indent_first=False)
-
-    # generate arguments declaration
-    args = "\n".join([str(i_p.type.cpp_type) + " " + i_p.label + ";"
-                      for i_p in function.in_ports])
-
-    # generate retvals declaration
-    declare_retvals = function.ret_type_str + " " + "retval" + ";"
-
-    # generate code that will copy the args:
-    copy_args = "\n".join([f"this->{i_p.label}" + " = " + i_p.label + ";"
-                           for i_p in function.in_ports])
-
-    # generate args as parameters:
-    call_args = ", ".join([str(i_p.type.cpp_type) + " " + i_p.label
-                           for i_p in function.in_ports])
-
-    set_error_value = "retval.set_error();" if not global_no_error else ""
-
-    inserts = dict(write_retvals=write_retvals,
-                   args=args,
-                   declare_retvals=declare_retvals,
-                   copy_args=copy_args,
-                   call_args=call_args,
-                   set_error_value=set_error_value,
-                   class_name=function.cpp_function_name.title() +
-                   "ExecutionManager")
-
-    class_str = class_template.substitute(inserts)
-    return class_str
-"""
-"""def time_limited_execution_cpp(function, args: str):
-    block = CppBlock()
-    if hasattr(function, "cpp_function_name"):
-        code = function.cpp_function_name.title() + "ExecutionManager"
-    else:
-        code = function.function_name.title() + "ExecutionManager"
-    #TODO add error handling here (pragma not there etc.)
-    pragma_timeout = function.get_pragma("max_time")
-    time = pragma_timeout["args"][0]
-    class_object_name = CppVariable.get_name("exec_man")
-    code += f" {class_object_name}({args}, {time});"
-    block.add_code(code)
-    return str(class_object_name), str(block)"""
 
 
 class Function(Node):
@@ -101,39 +40,9 @@ class Function(Node):
         if "dont_register" not in data or not data["dont_register"]:
             Function.functions[self.function_name] = self
 
-    @property
-    def ret_cpp_type(self):
-        if self.num_outputs > 1:
-            ret_types = [port.type for port in self.out_ports]
-            return "tuple<" + ", ".join([type_.cpp_type for type_ in ret_types]) + ">"
-        else:
-            return self.out_ports[0].type.cpp_type
-
-    def get_cpp_prototype(self):
-        ret_types = [port.type for port in self.out_ports]
-        ret_type_str = (
-            ret_types[0].cpp_type
-            if len(ret_types) == 1
-            else "tuple<" + ", ".join([type_.cpp_type for type_ in ret_types]) + ">"
-        )
-        cpp_function_name = (
-            "sisal_main" if self.function_name == "main" else self.function_name
-        )
-        arg_str = ", ".join([port.value.definition_str() for port in self.in_ports])
-
-        return f"{ret_type_str} {cpp_function_name}({arg_str});"
-
-    def process_timeout(self):
-        if hasattr(self, "pragmas"):
-            time_out = next((p for p in self.pragmas if p["name"] == "max_time"), None)
-            if time_out:
-                self.module.add_header("pthread.h")
-                # inserts = gen_time_limit_template(self)
-                # self.module.add_service_class(inserts)
-
     @to_llvm_method
     def to_llvm(self, irbuilder: ll.IRBuilder):
-        # mark nodes that contribute to (currently) creating output arrays, so those are heap-allocated
+        # mark nodes that contribute to (currently) creating output arrays, so those are preserved during memory freeing
         self.mark_heap_allocation()
         # collect ir types corresponding to arg types in a list:
         args = [

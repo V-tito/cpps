@@ -9,7 +9,6 @@ from ..llvm.llvmlite_helpers import (
     i32zero,
     i32one,
     i64,
-    copy_array_to_new_addr_loop,
     calc_memsize_at_runtime,
 )
 
@@ -219,6 +218,8 @@ class Reduction(Node):
             else:
                 heap_allocation_helper(source)
 
+    default_arr_size = 10
+
     def to_llvm(self, irbuilder: ll.IRBuilder):
         """Reduction node. Receives a boolean (1st port),
         which is a condition for including a new item,
@@ -240,6 +241,7 @@ class Reduction(Node):
             if not isinstance(self.out_ports[0].type, ArrayType)
             else array_descriptor_type
         )
+        # currently heap-allocates everything; perhaps, a ggod approach
         if self.operator == "array":
             with irbuilder.goto_block(self.loop_object.entry):
                 elemtyp = (
@@ -247,24 +249,19 @@ class Reduction(Node):
                     if not isinstance(self.out_ports[0].type.element, ArrayType)
                     else array_descriptor_type
                 )
-                len = i32zero
+                len = i32(self.default_arr_size)
                 if self.loop_object.ranged:
+                    # TODO narrow this check to int range with >=1 step!
                     # ranges in sisal include both left and right boundary
-                    size_minus_one = irbuilder.sub(
+                    init_len_minus_one = irbuilder.sub(
                         self.loop_object.right_boundary,
                         self.loop_object.left_boundary,
                     )
                     # so need to add one to compensate
-                    size = irbuilder.add(size_minus_one, i64(1))
-                    len = irbuilder.trunc(size, i32)
-                if self.loop_object.ranged and self.out_ports[0].type.is_output_array:
-                    # TODO implement malloc arrays in other cases (via porting from stack to heap after loop?
-                    # though i can just call free every time? can i?)
-                    size = calc_memsize_at_runtime(irbuilder, elemtyp, len)
-                    ptr = irbuilder.call(irbuilder.module.malloc, [size])
-                else:
-                    ptr = irbuilder.alloca(elemtyp, len)
-
+                    init_len = irbuilder.add(init_len_minus_one, i64(1))
+                    len = irbuilder.trunc(init_len, i32)
+                size = calc_memsize_at_runtime(irbuilder, elemtyp, len)
+                ptr = irbuilder.call(irbuilder.module.malloc, [size])
                 init_reduction_value = ll.Constant(array_descriptor_type, None)
                 init_reduction_value = irbuilder.insert_value(
                     init_reduction_value, ptr, 0
@@ -278,6 +275,11 @@ class Reduction(Node):
                 reduction_value.add_incoming(
                     init_reduction_value, self.loop_object.entry
                 )
+            irbuilder.position_at_start(self.loop_object.header)
+            allocated_size = irbuilder.phi(
+                i32, f"allocated_size_red_{self.loop_object.reduction_count}"
+            )
+            allocated_size.add_incoming(len, self.loop_object.entry)
         else:
             if self.operator == "sum":
                 reduction_value.add_incoming(
@@ -320,10 +322,27 @@ class Reduction(Node):
                     old_counter,
                     i32one,
                 )
-                if not self.loop_object.ranged:
-                    new_arr = irbuilder.alloca(elemtyp, counter)
-                    copy_arr_func = copy_array_to_new_addr_loop(elemtyp, irbuilder)
-                    irbuilder.call(copy_arr_func, [ptr, new_arr, old_counter])
+                exceeds = irbuilder.append_basic_block("arr_size_exceeds_allocated")
+                not_exceeds = irbuilder.append_basic_block(
+                    "arr_size_exceeds_allocated_not"
+                )
+                new_value = irbuilder.insert_value(reduction_value, counter, 1)
+                exceeds_check = irbuilder.icmp_unsigned(">", counter, allocated_size)
+                irbuilder.cbranch(exceeds_check, exceeds, not_exceeds)
+                with irbuilder.goto_block(exceeds):
+                    new_size = irbuilder.mul(
+                        i32(2), allocated_size
+                    )  # doubles allocated size like python does
+
+                    # TODO implement malloc arrays in other cases (via porting from stack to heap after loop?
+                    # though i can just call free every time? can i?)
+                    new_size_in_bytes = calc_memsize_at_runtime(
+                        irbuilder, elemtyp, new_size
+                    )
+
+                    new_arr = irbuilder.call(
+                        irbuilder.module.realloc, [ptr, new_size_in_bytes]
+                    )
                     new_elem = irbuilder.gep(
                         new_arr,
                         [
@@ -331,18 +350,32 @@ class Reduction(Node):
                         ],
                         source_etype=elemtyp,  # TODO check if correct approach
                     )
-                else:
+                    int_ = irbuilder.ptrtoint(new_elem, i64)
+                    new_elem = irbuilder.inttoptr(int_, ll.PointerType())
+                    irbuilder.store(input_value, new_elem)
+                    irbuilder.branch(redval_init_block)
+                with irbuilder.goto_block(not_exceeds):
                     new_elem = irbuilder.gep(
                         ptr,
                         [
                             old_counter,
                         ],
-                        source_etype=elemtyp,
+                        source_etype=elemtyp,  # TODO check if correct approach
                     )
-                int_ = irbuilder.ptrtoint(new_elem, i64)
-                new_elem = irbuilder.inttoptr(int_, ll.PointerType())
-                irbuilder.store(input_value, new_elem)
-                new_value = irbuilder.insert_value(reduction_value, counter, 1)
+                    int_ = irbuilder.ptrtoint(new_elem, i64)
+                    new_elem = irbuilder.inttoptr(int_, ll.PointerType())
+                    irbuilder.store(input_value, new_elem)
+                    irbuilder.branch(redval_init_block)
+                with irbuilder.goto_block(redval_init_block):
+                    new_allocated_size = irbuilder.phi(i32)
+                    next_reduction_value.add_incoming(new_value, exceeds)
+                    next_reduction_value.add_incoming(new_value, not_exceeds)
+                    new_allocated_size.add_incoming(new_size, exceeds)
+                    new_allocated_size.add_incoming(allocated_size, not_exceeds)
+                    new_allocated_size.add_incoming(allocated_size, otherwise)
+                    allocated_size.add_incoming(
+                        new_allocated_size, self.loop_object.latch
+                    )
             else:
                 if self.operator == "value":
                     new_value = input_value
@@ -379,16 +412,23 @@ class Reduction(Node):
                             raise CodeGenError(
                                 "Failed to recognize reduction value type"
                             )
-            next_reduction_value.add_incoming(new_value, then)
-            irbuilder.branch(redval_init_block)
+                next_reduction_value.add_incoming(new_value, then)
+                irbuilder.branch(redval_init_block)
             # emit instructions for when the predicate is true
             with irbuilder.goto_block(otherwise):
                 new_value = reduction_value
                 next_reduction_value.add_incoming(new_value, otherwise)
                 irbuilder.branch(redval_init_block)
             reduction_value.add_incoming(next_reduction_value, self.loop_object.latch)
-
         self.out_ports[0].value = reduction_value
+        # resizing after loop; may bring back if the need arises
+        """if self.operator == "array" and self.out_ports[0].type.is_output_array:
+            with irbuilder.goto_block(self.loop_object.follower):
+                old_ptr = irbuilder.extract_value(reduction_value, 0)
+                count = irbuilder.extract_value(reduction_value, 1)
+                size = calc_memsize_at_runtime(irbuilder, elemtyp, count)
+                res = irbuilder.call(irbuilder.module.realloc, [old_ptr, size])
+                self.out_ports[0].value = res"""
         self.loop_object.last_ret_block = redval_init_block
 
 
