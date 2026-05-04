@@ -20,6 +20,7 @@ class Let(Node):
         # initialization code:
         for i_p, init_i_p in zip(self.in_ports, self.init.in_ports):
             init_i_p.value = i_p.value
+            init_i_p.error_cond = i_p.error_cond
         self.init.to_llvm(irbuilder, self.body.in_ports)
 
         self.body.let = self
@@ -28,10 +29,23 @@ class Let(Node):
             self.body.in_ports[-len(self.in_ports) :], self.in_ports
         ):
             b_i_p.value = let_i_p.value
-
+            b_i_p.error_cond = let_i_p.error_cond
+        for i_o_p in self.init.out_ports:
+            b_i_p = next(
+                (
+                    port
+                    for port in self.body.in_ports
+                    if hasattr(port, "label") and port.label == i_o_p.label
+                ),
+                None,
+            )
+            if b_i_p:
+                b_i_p.value = i_o_p.value
+                b_i_p.error_cond = i_o_p.error_cond
         # body:
         for o_p, b_o_p in zip(self.out_ports, self.body.out_ports):
             o_p.value = llvm_eval(b_o_p, irbuilder)
+            o_p.error_cond = b_o_p.error_cond
 
     def mark_heap_allocation(self):
         for o_p, b_o_p in zip(self.out_ports, self.body.out_ports):
@@ -64,9 +78,9 @@ class Let(Node):
 
 
 class LetBody(Node):
-
-    # @to_cpp_method
+    @to_llvm_method
     def to_llvm(self, irbuilder: ll.IRBuilder):
         # initialization code:
         for i_p, let_i_p in zip(self.in_ports, self.let.in_ports):
             i_p.value = let_i_p.value
+            i_p.error_cond = let_i_p.error_cond

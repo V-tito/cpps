@@ -48,9 +48,11 @@ class Function(Node):
         self.mark_heap_allocation()
 
         # collect ir types corresponding to arg types in a list:
-        args = [port.type.llvm_type() for port in self.in_ports]
+        # args = [port.type.llvm_type() for port in self.in_ports]
+        args = [port.type.errored_llvm_type() for port in self.in_ports]
         # collect ir types corresponding to return types in a list:
-        ret_types = [port.type.llvm_type() for port in self.out_ports]
+        # ret_types = [port.type.llvm_type() for port in self.out_ports]
+        ret_types = [port.type.errored_llvm_type() for port in self.out_ports]
         # format types for llvmlite
         if len(ret_types) == 0:
             ret_type = ll.VoidType()
@@ -79,13 +81,15 @@ class Function(Node):
             )
         # assign arguments to temp vars:
         for port, arg in zip(self.in_ports, func.args):
-            port.value = arg
+            port.value = irbuilder.extract_value(arg, 1)
+            port.error_cond = irbuilder.extract_value(arg, 0)
 
         # evaluate function output values (results):
         ret_vals = []
         for index, o_p in enumerate(self.out_ports):
             llvm_eval(o_p, irbuilder)
-            ret_vals.append(o_p.value)
+            # ret_vals.append(o_p.value)
+            ret_vals.append(o_p.type.make_errored_val(o_p, irbuilder))
 
         # free heap-allocated memory:
         mallocs_to_rem = self.mallocs - self.preserved_mallocs
@@ -115,6 +119,8 @@ class Function(Node):
                 heap_allocation_helper(o_p)
 
 
+# TODO and i do need to make vals packing in main, ofc
+# or perhaps even in ctypes
 def create_main(irbuilder: ll.IRBuilder):
     # passes down args and provides console output
     if "main" not in Function.functions:

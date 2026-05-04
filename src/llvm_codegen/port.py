@@ -22,6 +22,8 @@ class Port:
         self.value = None
         self.renamed = False  # set it to True when renamed
         self.in_port = in_port  # shows if is it an in-port
+        # llvm_codegen specific
+        self.error_cond = None  # when val of this port returns error
 
     def __repr__(self):
         return (
@@ -31,7 +33,7 @@ class Port:
 
 
 def copy_port_values(src_ports, dst_ports):
-    """ Copy C++ values assigned to source ports to matching destination ports.
+    """Copy C++/llvmlite values assigned to source ports to matching destination ports.
     Ex. If a new variable is defined in Init or LoopBody, we expect it to be
     available in Returns"""
     for d_p in dst_ports:
@@ -44,17 +46,33 @@ def copy_port_values(src_ports, dst_ports):
             pass
 
 
+def copy_port_errconds(src_ports, dst_ports):
+    """llvmlite exclusive. Copy error conds assigned to source ports to matching destination ports."""
+    for d_p in dst_ports:
+        try:
+            d_p.error_cond = next(
+                s_p.error_cond for s_p in src_ports if s_p.label == d_p.label
+            )
+        except:
+            # print(d_p.label, d_p.node)
+            # print(list(s_p.label for s_p in src_ports))
+            # print()
+            pass
+
+
 def copy_port_values_explicit(src_ports, dst_ports):
-    """ Copy C++ values assigned to source ports to matching destination ports.
+    """Copy C++ values assigned to source ports to matching destination ports.
     Ex. If a new variable is defined in Init or LoopBody, we expect it to be
     available in Returns"""
     for index, (src, dst) in enumerate(zip(src_ports, dst_ports)):
         if src.label != dst.label:
-            raise CodeGenError(f"mismatch between port labels: {src.id}"
-                               f" and {dst.id} {src.label} {dst.label} "
-                               f"{src.node} {dst.node}"
-                               f"port number {index}",
-                               src.type.location)
+            raise CodeGenError(
+                f"mismatch between port labels: {src.id}"
+                f" and {dst.id} {src.label} {dst.label} "
+                f"{src.node} {dst.node}"
+                f"port number {index}",
+                src.type.location,
+            )
         dst.value = src.value
 
 

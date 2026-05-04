@@ -23,10 +23,39 @@ class LlModule(ll.Module):
             ll.FunctionType(ll.PointerType(), [ll.IntType(64)]),
             name="malloc",
         )
+        self.calloc = ll.Function(
+            self,
+            ll.FunctionType(ll.PointerType(), [ll.IntType(64)]),
+            name="calloc",
+        )
         self.realloc = ll.Function(
             self,
             ll.FunctionType(ll.PointerType(), [ll.PointerType(), ll.IntType(64)]),
             name="realloc",
+        )
+        self.memcpy = ll.Function(
+            self,
+            ll.FunctionType(
+                ll.VoidType(), [ll.PointerType(), ll.PointerType(), ll.IntType(64)]
+            ),
+            name="llvm.memcpy.p0.p0.i64",
+        )
+        self.sizeof = ll.Function(
+            self,
+            ll.FunctionType(
+                ll.IntType(64), [ll.PointerType(), ll.PointerType(), ll.IntType(64)]
+            ),
+            name="sizeof",
+        )
+        self.int_power = ll.Function(
+            self,
+            ll.FunctionType(ll.IntType(64), [ll.IntType(64), ll.IntType(64)]),
+            name="llvm.powi.i64",
+        )
+        self.double_power = ll.Function(
+            self,
+            ll.FunctionType(ll.DoubleType(), [ll.DoubleType(), ll.DoubleType()]),
+            name="llvm.pow.f64",
         )
         self.free = ll.Function(
             self,
@@ -163,6 +192,7 @@ def llvm_eval(in_port, irbuilder):
     if port.value is None:
         port.node.to_llvm(irbuilder)
     in_port.value = port.value
+    in_port.error_cond = port.error_cond
     return port.value
 
 

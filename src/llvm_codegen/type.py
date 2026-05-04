@@ -50,6 +50,15 @@ class Type:
         irbuilder.store(c_str_val, c_str)
         irbuilder.call(printf, [c_str, val])
 
+    def errored_llvm_type(self):
+        return ll.LiteralStructType([ll.IntType(1), self.llvm_type()])
+
+    def make_errored_val(self, port, irbuilder: ll.IRBuilder):
+        ret = self.errored_llvm_type(None)
+        ret = irbuilder.insert_value(ret, port.err_cond, 0)
+        ret = irbuilder.insert_value(ret, port.value, 1)
+        return ret
+
     @property
     def internal_type(self):
         return self.__llvm_type__
@@ -104,6 +113,14 @@ class ArrayType(Type):
             sizes = ArrayType.get_dim_sizes(vals[0], depth - 1)
         sizes.append(len(vals))
         return sizes
+
+    def errored_llvm_type(self):
+        return ll.LiteralStructType(
+            [ll.PointerType(), ll.IntType(32), ll.PointerType()]
+        )
+
+    def make_errored_val(self, port, irbuilder: ll.IRBuilder):
+        return port.value
 
     def get_fmt_string(self):
         res = f"[{f"{self.element.get_fmt_string()}, "*(self.count-1)+f"{self.element.get_fmt_string()}"}]\00"
@@ -276,10 +293,12 @@ class AnyType(Type):
 class RecordType(Type):
 
     def __init__(self, type_object):
+        # TODO adjust to errors here
         class WidenedLitStruct(ll.LiteralStructType):
             def __init__(self, names, elems, packed=False):
                 super().__init__(elems, packed)
                 self.names_to_indices = names
+                # TODO adjust to errored
 
         super().__init__(type_object)
         self.__llvm_type__ = WidenedLitStruct(
@@ -293,6 +312,8 @@ class RecordType(Type):
 
     # static, contains description of corresponding C++
     # structs as strings
+    def get_errtyp(self):
+        return ll.IntType(len(self.fields))
 
     def names_to_indices(self):
         names = {}

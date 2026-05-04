@@ -2,7 +2,7 @@ from ..node import Node, to_llvm_method
 from ..llvm.llvm_codegen import llvm_eval, heap_allocation_helper
 from ..error import CodeGenError
 from ..edge import Edge, get_src_node
-from ..port import copy_port_values, copy_port_labels
+from ..port import copy_port_values, copy_port_labels, copy_port_errconds
 from ..type import ArrayType, get_array_descriptor
 from ..llvm.llvmlite_helpers import (
     i32,
@@ -85,11 +85,15 @@ class LoopExpression(Node):
         # is shared between Loop and Let:
         if self.init:
             copy_port_values(self.in_ports, self.init.in_ports[-len(self.in_ports) :])
+            copy_port_errconds(self.in_ports, self.init.in_ports[-len(self.in_ports) :])
             irbuilder.position_at_start(self.entry)
             self.init.to_llvm(irbuilder)
 
         if self.range_gen:
             copy_port_values(
+                self.in_ports, self.range_gen.in_ports[-len(self.in_ports) :]
+            )
+            copy_port_errconds(
                 self.in_ports, self.range_gen.in_ports[-len(self.in_ports) :]
             )
             self.range_gen.to_llvm(irbuilder)
@@ -99,6 +103,10 @@ class LoopExpression(Node):
                 self.get_out_ports_list([self.range_gen, self.init]), self.body.in_ports
             )
             copy_port_values(self.in_ports, self.body.in_ports[-len(self.in_ports) :])
+            copy_port_errconds(
+                self.get_out_ports_list([self.range_gen, self.init]), self.body.in_ports
+            )
+            copy_port_errconds(self.in_ports, self.body.in_ports[-len(self.in_ports) :])
             self.body.to_llvm(irbuilder)
 
         if self.condition:
@@ -106,6 +114,12 @@ class LoopExpression(Node):
                 self.in_ports, self.condition.in_ports[-len(self.in_ports) :]
             )
             copy_port_values(
+                self.get_out_ports_list([self.body]), self.condition.in_ports
+            )
+            copy_port_errconds(
+                self.in_ports, self.condition.in_ports[-len(self.in_ports) :]
+            )
+            copy_port_errconds(
                 self.get_out_ports_list([self.body]), self.condition.in_ports
             )
             self.condition.to_llvm(irbuilder)
@@ -116,6 +130,12 @@ class LoopExpression(Node):
         )
 
         copy_port_values(self.in_ports, self.returns.in_ports[-len(self.in_ports) :])
+        copy_port_errconds(
+            self.get_out_ports_list([self.body, self.range_gen, self.init]),
+            self.returns.in_ports,
+        )
+
+        copy_port_errconds(self.in_ports, self.returns.in_ports[-len(self.in_ports) :])
 
     @to_llvm_method
     def to_llvm(self, irbuilder: ll.IRBuilder):
@@ -218,7 +238,7 @@ class Reduction(Node):
             else:
                 heap_allocation_helper(source)
 
-    default_arr_size = 10
+    default_arr_size = 4
 
     def to_llvm(self, irbuilder: ll.IRBuilder):
         """Reduction node. Receives a boolean (1st port),
@@ -306,8 +326,25 @@ class Reduction(Node):
         otherwise = irbuilder.append_basic_block(
             f"Loop_{self.loop_object.id}_reduction_{self.loop_object.reduction_count}_cond_false"
         )
+        err_block = irbuilder.append_basic_block(
+            f"Loop_{self.loop_object.id}_reduction_{self.loop_object.reduction_count}_error"
+        )
+        cond_block = irbuilder.append_basic_block(
+            f"Loop_{self.loop_object.id}_reduction_{self.loop_object.reduction_count}_cond_block"
+        )
         with irbuilder.goto_block(self.loop_object.last_ret_block):
+            errc = irbuilder.or_(
+                self.in_ports[0].error_cond, self.in_ports[1].error_cond
+            )
+
+            irbuilder.cbranch(errc, err_block, cond_block)
+        with irbuilder.goto_block(cond_block):
             irbuilder.cbranch(cond, then, otherwise)
+        with irbuilder.goto_block(err_block):
+            irbuilder.branch(redval_init_block)
+            next_reduction_value.add_incoming(
+                next_reduction_value.type(ll.Undefined), err_block
+            )
         with irbuilder.goto_block(then):
             if self.operator == "array":
                 old_counter = irbuilder.extract_value(reduction_value, 1)

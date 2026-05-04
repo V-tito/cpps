@@ -8,6 +8,7 @@ from ..node import Node
 from ..llvm.llvm_codegen import llvm_eval
 import llvmlite.ir as ll
 from ..error import CodeGenError
+from ..llvm.llvmlite_helpers import i32zero
 
 
 class RecordAccess(Node):
@@ -17,9 +18,14 @@ class RecordAccess(Node):
         record = llvm_eval(self.in_ports[0], irbuilder)
         indices = record.type.names_to_indices()
         if isinstance(record, ll.PointerType):
+            errptr = irbuilder.gep(
+                record,
+                [i32zero, i32zero],
+                source_etype=self.out_ports[0].type.llvm_type(),
+            )
             pointer = irbuilder.gep(
                 record,
-                [ll.Constant(ll.IntType(32), 0), indices[self.field]],
+                [i32zero, indices[self.field]],
                 source_etype=self.out_ports[0].type.llvm_type(),
             )
             # Cloud Sisal Arrays' indices start from 1 by default

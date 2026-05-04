@@ -16,18 +16,18 @@ class RecordInit(Node):
         # inputs: array, index
 
         items = [llvm_eval(i_p, irbuilder) for i_p in self.in_ports]
-        types = [item.type for item in items]
+        types = [ll.IntType(len(items))] + [item.type for item in items]
 
         record_type = ll.LiteralStructType(types)
 
-        new_var = irbuilder.alloca(record_type)
+        new_var = record_type(None)
+        bitmask = ll.IntType(len(items))(0)
 
         for port_index, value in enumerate(items):
-            addr = irbuilder.gep(
-                new_var,
-                port_index,
-                # source_etype=types[port_index]
-            )
-            irbuilder.store(value, addr)
+            irbuilder.insert_value(new_var, value, port_index + 1)
+            bitmask = irbuilder.add(bitmask, bitmask.type(1))
+            if port_index + 1 < len(items):
+                bitmask = irbuilder.shl(bitmask, 1)
+        irbuilder.insert_value(new_var, bitmask, 0)
 
         self.out_ports[0].value = irbuilder.load(new_var, typ=record_type)

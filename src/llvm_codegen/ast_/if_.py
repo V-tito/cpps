@@ -20,17 +20,20 @@ class If(Node):
 
         BranchCount.count += 1  # надо инкапсуляцию
 
-        cond_blocks = self.condition.to_llvm(self, irbuilder)
+        cond_blocks, errorbr = self.condition.to_llvm(self, irbuilder)
         follower = irbuilder.append_basic_block(name=f"If{BranchCount.count}follower")
         # evaluate branches:
         for o_p in self.out_ports:
-            irbuilder.position_at_end(follower)
+            irbuilder.position_at_start(follower)
             o_p.value = irbuilder.phi(
                 o_p.type.llvm_type(), name=o_p.label if o_p.label else ""
             )  # here arr descriptor very much so
             for index, then_block in enumerate(cond_blocks):
                 irbuilder.position_at_start(then_block)
                 self.branches[index].to_llvm(self, o_p, irbuilder, follower)
+            o_p.value.add_incoming(o_p.value.type(ll.Undefined), errorbr)
+        with irbuilder.goto_block(errorbr):
+            irbuilder.branch(follower)
         irbuilder.position_at_end(follower)
 
     def mark_heap_allocation(self):
@@ -70,18 +73,24 @@ class Condition(Node):
 
         for i_p, p_ip in zip(self.in_ports, parent_if.in_ports):
             i_p.value = p_ip.value
-
+        errorbr = f"If{BranchCount.count}error_in_a_condition"
         for condition_index, o_p in enumerate(self.out_ports):
             cond_result = llvm_eval(o_p, irbuilder)
+            cond_errored = o_p.error_cond
             truebr = irbuilder.append_basic_block(
                 name=f"If{BranchCount.count}true{condition_index}"
             )
             falsebr = irbuilder.append_basic_block(
                 name=f"If{BranchCount.count}false{condition_index}"
             )
+            noerrorbr = irbuilder.append_basic_block(
+                name=f"If{BranchCount.count}noeror_cond{condition_index}"
+            )
+            irbuilder.cbranch(cond_errored, errorbr, noerrorbr)
+            irbuilder.position_at_start(noerrorbr)
             irbuilder.cbranch(cond_result, truebr, falsebr)
             irbuilder.position_at_start(falsebr)
             branches.append(truebr)
         branches.append(irbuilder.block)
 
-        return branches
+        return branches, errorbr
