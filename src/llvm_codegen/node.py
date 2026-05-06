@@ -4,9 +4,10 @@
 code generator node (mostly deserealizing code)
 """
 
+import llvmlite.ir as ll
 from .port import Port
 from .type import get_type
-from .edge import Edge
+from .edge import Edge, get_src_port
 from .llvm.llvm_codegen import llvm_eval  # тут будет llvm_eval
 
 
@@ -14,8 +15,8 @@ def get_node(node_id):
     return Node.node_index[node_id]
 
 
-def to_llvm_method(fn):  # это хер знает что, пока не трогаем
-    def wrapped(self, irbuilder):
+def to_llvm_method(fn):
+    def wrapped(self: Node, irbuilder: ll.IRBuilder):
         if hasattr(self, "name_child_output_values") and self.name_child_output_values:
 
             # label the ports:
@@ -28,7 +29,7 @@ def to_llvm_method(fn):  # это хер знает что, пока не тро
 
             for o_p in self.out_ports:
                 if not o_p.label:
-                    if not hasattr(self, "name"):
+                    if hasattr(self, "name"):
                         o_p.label = self.name + str(o_p.index)
                     else:
                         o_p.label = self.__class__.__name__ + str(o_p.index)
@@ -37,7 +38,8 @@ def to_llvm_method(fn):  # это хер знает что, пока не тро
             for i_p in self.in_ports:
                 llvm_eval(i_p, irbuilder)
 
-        return fn(self, irbuilder)
+        # eval ports
+        fn(self, irbuilder)
 
     return wrapped
 
@@ -89,6 +91,8 @@ class Node:
                 for br in node.branches:
                     if hasattr(br, "nodes") and self in br.nodes:
                         return br
+                    elif br == self:
+                        return node
 
             for sub_node in ["init", "body", "condition", "range_gen", "returns"]:
                 if hasattr(node, sub_node):

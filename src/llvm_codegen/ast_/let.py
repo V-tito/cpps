@@ -28,7 +28,6 @@ class Let(Node):
             self.body.in_ports[-len(self.in_ports) :], self.in_ports
         ):
             b_i_p.value = let_i_p.value
-
         # body:
         for o_p, b_o_p in zip(self.out_ports, self.body.out_ports):
             o_p.value = llvm_eval(b_o_p, irbuilder)
@@ -64,8 +63,7 @@ class Let(Node):
 
 
 class LetBody(Node):
-
-    # @to_cpp_method
+    @to_llvm_method
     def to_llvm(self, irbuilder: ll.IRBuilder):
         # initialization code:
         for i_p, let_i_p in zip(self.in_ports, self.let.in_ports):

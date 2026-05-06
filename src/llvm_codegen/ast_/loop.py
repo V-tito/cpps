@@ -10,6 +10,7 @@ from ..llvm.llvmlite_helpers import (
     i32one,
     i64,
     calc_memsize_at_runtime,
+    i1,
 )
 
 # from ..cpp import template
@@ -85,8 +86,9 @@ class LoopExpression(Node):
         # is shared between Loop and Let:
         if self.init:
             copy_port_values(self.in_ports, self.init.in_ports[-len(self.in_ports) :])
-            irbuilder.position_at_start(self.entry)
+            irbuilder.position_at_start(self.entry_start)
             self.init.to_llvm(irbuilder)
+            self.entry_end = irbuilder.block
 
         if self.range_gen:
             copy_port_values(
@@ -127,11 +129,15 @@ class LoopExpression(Node):
         self.reduction_count = 0
         self.last_ret_block = None
         self.predecessor = irbuilder.block
-        self.entry = irbuilder.append_basic_block(
+        self.entry_start = irbuilder.append_basic_block(
             name=f"Loop_{LoopExpression.count}_entry"
         )
-        self.header = irbuilder.append_basic_block(
-            name=f"Loop_{LoopExpression.count}_header"
+        self.entry_end = self.entry_start
+        self.header_start = irbuilder.append_basic_block(
+            name=f"Loop_{LoopExpression.count}_header_start"
+        )
+        self.header_end = irbuilder.append_basic_block(
+            name=f"Loop_{LoopExpression.count}_header_end"
         )
         self.loop_body_start_block = irbuilder.append_basic_block(
             name=f"Loop_{LoopExpression.count}_body_start"
@@ -147,7 +153,8 @@ class LoopExpression(Node):
         )  # ret would be in here
         self.phi_vars = []
 
-        irbuilder.branch(self.entry)
+        irbuilder.branch(self.entry_start)
+        irbuilder.position_at_start(self.entry_start)
 
         self.copy_port_values_to_children(irbuilder)
 
@@ -158,12 +165,12 @@ class LoopExpression(Node):
 
         for o_p, r_o_p in zip(self.out_ports, self.returns.out_ports):
             o_p.value = llvm_eval(r_o_p, irbuilder)
-        if not (self.entry.is_terminated):
-            with irbuilder.goto_block(self.entry):
-                irbuilder.branch(self.header)
+        if not (self.entry_end.is_terminated):
+            with irbuilder.goto_block(self.entry_end):
+                irbuilder.branch(self.header_start)
         if not (self.latch.is_terminated):
             with irbuilder.goto_block(self.latch):
-                irbuilder.branch(self.header)
+                irbuilder.branch(self.header_start)
         if self.last_ret_block and not (self.last_ret_block.is_terminated):
             with irbuilder.goto_block(self.last_ret_block):
                 irbuilder.branch(self.latch)
@@ -218,7 +225,7 @@ class Reduction(Node):
             else:
                 heap_allocation_helper(source)
 
-    default_arr_size = 10
+    default_arr_size = 4
 
     def to_llvm(self, irbuilder: ll.IRBuilder):
         """Reduction node. Receives a boolean (1st port),
@@ -229,23 +236,29 @@ class Reduction(Node):
             f"Loop_{self.loop_object.id}_reduction_{self.loop_object.reduction_count}_init"
         )
         self.loop_object.reduction_count += 1
-        irbuilder.position_at_start(self.loop_object.header)
-        reduction_value = irbuilder.phi(self.out_ports[0].type.llvm_type())
+        irbuilder.position_at_start(self.loop_object.header_start)
+        reduction_value = irbuilder.phi(self.out_ports[0].type.errored_llvm_type())
         irbuilder.position_at_start(redval_init_block)
-        next_reduction_value = irbuilder.phi(self.out_ports[0].type.llvm_type())
+        next_reduction_value = irbuilder.phi(self.out_ports[0].type.errored_llvm_type())
         # currently heap-allocates everything; perhaps, a ggod approach
         if self.operator == "array":
             parent_function = self.get_containing_function()
-            with irbuilder.goto_block(self.loop_object.entry):
-                elemtyp = self.out_ports[0].type.element.llvm_type()
+            with irbuilder.goto_block(self.loop_object.entry_end):
+                elemtyp = self.out_ports[0].type.element.errored_llvm_type()
 
                 len = i32(self.default_arr_size)
                 if self.loop_object.ranged:
                     # TODO narrow this check to int range with >=1 step!
                     # ranges in sisal include both left and right boundary
+                    right_boundary = irbuilder.extract_value(
+                        self.loop_object.right_boundary, 1
+                    )
+                    left_boundary = irbuilder.extract_value(
+                        self.loop_object.left_boundary, 1
+                    )
                     init_len_minus_one = irbuilder.sub(
-                        self.loop_object.right_boundary,
-                        self.loop_object.left_boundary,
+                        right_boundary,
+                        left_boundary,
                     )
                     # so need to add one to compensate
                     init_len = irbuilder.add(init_len_minus_one, i64(1))
@@ -265,40 +278,50 @@ class Reduction(Node):
                     1,
                     name="reduction_array",
                 )
-                reduction_value.add_incoming(
-                    init_reduction_value, self.loop_object.entry
+                errored_init_reduction_value = self.out_ports[0].type.pack_val(
+                    init_reduction_value, irbuilder
                 )
-            irbuilder.position_at_start(self.loop_object.header)
+                reduction_value.add_incoming(
+                    errored_init_reduction_value, self.loop_object.entry_end
+                )
+            irbuilder.position_at_start(self.loop_object.header_start)
             allocated_size = irbuilder.phi(
                 i32, f"allocated_size_red_{self.loop_object.reduction_count}"
             )
-            allocated_size.add_incoming(len, self.loop_object.entry)
+            allocated_size.add_incoming(len, self.loop_object.entry_end)
         else:
-            if self.operator == "sum":
-                reduction_value.add_incoming(
-                    ll.Constant(self.in_ports[1].type.llvm_type(), 0),
-                    self.loop_object.entry,
-                )
-                self.loop_object.reduction_values += [next_reduction_value]
-                self.loop_object.reduction_operators = ["sis_sum"]
-            elif self.operator == "product":
-                reduction_value.add_incoming(
-                    ll.Constant(self.in_ports[1].type.llvm_type(), 1),
-                    self.loop_object.entry,
-                )
-                self.loop_object.reduction_values += [next_reduction_value]
-                self.loop_object.reduction_operators = ["sis_product"]
-            else:
-                reduction_value.add_incoming(
-                    ll.Constant(self.in_ports[1].type.llvm_type(), 1),
-                    self.loop_object.entry,
-                )
+            with irbuilder.goto_block(self.loop_object.entry_end):
+                if self.operator == "sum":
+                    reduction_value.add_incoming(
+                        self.in_ports[1].type.pack_val(
+                            ll.Constant(self.in_ports[1].type.llvm_type(), 0), irbuilder
+                        ),
+                        self.loop_object.entry_end,
+                    )
+                    self.loop_object.reduction_values += [next_reduction_value]
+                    self.loop_object.reduction_operators = ["sis_sum"]
+                elif self.operator == "product":
+                    reduction_value.add_incoming(
+                        self.in_ports[1].type.pack_val(
+                            ll.Constant(self.in_ports[1].type.llvm_type(), 1), irbuilder
+                        ),
+                        self.loop_object.entry_end,
+                    )
+                    self.loop_object.reduction_values += [next_reduction_value]
+                    self.loop_object.reduction_operators = ["sis_product"]
+                else:
+                    reduction_value.add_incoming(
+                        self.in_ports[1].type.pack_val(
+                            ll.Constant(self.in_ports[1].type.llvm_type(), 1), irbuilder
+                        ),
+                        self.loop_object.entry_end,
+                    )
 
         with irbuilder.goto_block(self.loop_object.loop_body_end_block):
             input_value = llvm_eval(self.in_ports[1], irbuilder)
             cond = llvm_eval(self.in_ports[0], irbuilder)
-        if not self.loop_object.last_ret_block:
-            self.loop_object.last_ret_block = self.loop_object.loop_body_end_block
+            if not self.loop_object.last_ret_block:
+                self.loop_object.last_ret_block = irbuilder.block
 
         then = irbuilder.append_basic_block(
             f"Loop_{self.loop_object.id}_reduction_{self.loop_object.reduction_count}_cond_true"
@@ -306,11 +329,34 @@ class Reduction(Node):
         otherwise = irbuilder.append_basic_block(
             f"Loop_{self.loop_object.id}_reduction_{self.loop_object.reduction_count}_cond_false"
         )
+        err_block = irbuilder.append_basic_block(
+            f"Loop_{self.loop_object.id}_reduction_{self.loop_object.reduction_count}_error"
+        )
+        cond_block = irbuilder.append_basic_block(
+            f"Loop_{self.loop_object.id}_reduction_{self.loop_object.reduction_count}_cond_block"
+        )
         with irbuilder.goto_block(self.loop_object.last_ret_block):
-            irbuilder.cbranch(cond, then, otherwise)
+            reduction_error = irbuilder.extract_value(reduction_value, 0)
+            condition_error = irbuilder.extract_value(cond, 0)
+            new_val_error = irbuilder.extract_value(input_value, 0)
+            errc = irbuilder.or_(reduction_error, condition_error)
+            if self.operator != "array":
+                errc = irbuilder.or_(errc, new_val_error)
+
+            irbuilder.cbranch(errc, err_block, cond_block)
+        with irbuilder.goto_block(cond_block):
+            condition_val = irbuilder.extract_value(cond, 1)
+            irbuilder.cbranch(condition_val, then, otherwise)
+        with irbuilder.goto_block(err_block):
+            next_reduction_value.add_incoming(
+                self.out_ports[0].type.make_error(irbuilder), err_block
+            )
+            irbuilder.branch(redval_init_block)
+
         with irbuilder.goto_block(then):
             if self.operator == "array":
-                old_counter = irbuilder.extract_value(reduction_value, 1)
+                descriptor = irbuilder.extract_value(reduction_value, 1)
+                old_counter = irbuilder.extract_value(descriptor, 1)
                 counter = irbuilder.add(
                     old_counter,
                     i32one,
@@ -319,7 +365,8 @@ class Reduction(Node):
                 not_exceeds = irbuilder.append_basic_block(
                     "arr_size_exceeds_allocated_not"
                 )
-                new_value = irbuilder.insert_value(reduction_value, counter, 1)
+                new_value = irbuilder.insert_value(descriptor, counter, 1)
+
                 exceeds_check = irbuilder.icmp_unsigned(">", counter, allocated_size)
                 irbuilder.cbranch(exceeds_check, exceeds, not_exceeds)
                 with irbuilder.goto_block(exceeds):
@@ -351,6 +398,10 @@ class Reduction(Node):
                     int_ = irbuilder.ptrtoint(new_elem, i64)
                     new_elem = irbuilder.inttoptr(int_, ll.PointerType())
                     irbuilder.store(input_value, new_elem)
+                    new_val_if_exceeds = irbuilder.insert_value(new_value, new_arr, 0)
+                    new_val_errored_exceeds = self.out_ports[0].type.pack_val(
+                        new_val_if_exceeds, irbuilder
+                    )
                     irbuilder.branch(redval_init_block)
                 with irbuilder.goto_block(not_exceeds):
                     new_elem = irbuilder.gep(
@@ -363,14 +414,18 @@ class Reduction(Node):
                     int_ = irbuilder.ptrtoint(new_elem, i64)
                     new_elem = irbuilder.inttoptr(int_, ll.PointerType())
                     irbuilder.store(input_value, new_elem)
+                    new_value_errored = self.out_ports[0].type.pack_val(
+                        new_value, irbuilder
+                    )
                     irbuilder.branch(redval_init_block)
                 with irbuilder.goto_block(redval_init_block):
                     new_allocated_size = irbuilder.phi(i32)
-                    next_reduction_value.add_incoming(new_value, exceeds)
-                    next_reduction_value.add_incoming(new_value, not_exceeds)
+                    next_reduction_value.add_incoming(new_val_errored_exceeds, exceeds)
+                    next_reduction_value.add_incoming(new_value_errored, not_exceeds)
                     new_allocated_size.add_incoming(new_size, exceeds)
                     new_allocated_size.add_incoming(allocated_size, not_exceeds)
                     new_allocated_size.add_incoming(allocated_size, otherwise)
+                    new_allocated_size.add_incoming(i32(ll.Undefined), err_block)
                     allocated_size.add_incoming(
                         new_allocated_size, self.loop_object.latch
                     )
@@ -378,33 +433,48 @@ class Reduction(Node):
                 if self.operator == "value":
                     new_value = input_value
                 elif self.operator == "sum":
-                    if isinstance(input_value.type, ll.IntType):
+                    left_operand = irbuilder.extract_value(reduction_value, 1)
+                    right_operand = irbuilder.extract_value(input_value, 1)
+                    if isinstance(right_operand.type, ll.IntType):
                         new_value = irbuilder.add(
-                            input_value,
-                            reduction_value,
+                            left_operand,
+                            right_operand,
                         )
-
+                        new_value = self.out_ports[0].type.pack_val(
+                            new_value, irbuilder
+                        )
                     else:
-                        if isinstance(input_value.type, ll.DoubleType):
+                        if isinstance(right_operand.type, ll.DoubleType):
                             new_value = irbuilder.fadd(
-                                input_value,
-                                reduction_value,
+                                left_operand,
+                                right_operand,
+                            )
+                            new_value = self.out_ports[0].type.pack_val(
+                                new_value, irbuilder
                             )
                         else:
                             raise CodeGenError(
                                 "Failed to recognize reduction value type"
                             )
                 elif self.operator == "product":
-                    if isinstance(input_value.type, ll.IntType):
+                    left_operand = irbuilder.extract_value(reduction_value, 1)
+                    right_operand = irbuilder.extract_value(input_value, 1)
+                    if isinstance(right_operand.type, ll.IntType):
                         new_value = irbuilder.mul(
-                            input_value,
-                            reduction_value,
+                            left_operand,
+                            right_operand,
+                        )
+                        new_value = self.out_ports[0].type.pack_val(
+                            new_value, irbuilder
                         )
                     else:
-                        if isinstance(input_value.type, ll.DoubleType):
+                        if isinstance(right_operand.type, ll.DoubleType):
                             new_value = irbuilder.fmul(
-                                input_value,
-                                reduction_value,
+                                left_operand,
+                                right_operand,
+                            )
+                            new_value = self.out_ports[0].type.pack_val(
+                                new_value, irbuilder
                             )
                         else:
                             raise CodeGenError(
@@ -460,50 +530,79 @@ class RangeNumeric(Node):
 class Scatter(Node):
 
     def to_llvm(self, irbuilder: ll.IRBuilder):
-        with irbuilder.goto_block(self.loop_object.header):
+        with irbuilder.goto_block(self.loop_object.entry_end):
             # o_p: element, index
             input_var = llvm_eval(self.in_ports[0], irbuilder)
-            input_node = get_src_node(self.in_ports[0])
-            if type(input_node) == RangeNumeric:
-                left = input_node.in_ports[0].value
-                right = input_node.in_ports[1].value
+            self.loop_object.entry_end = irbuilder.block
+        input_node = get_src_node(self.in_ports[0])
+        if type(input_node) == RangeNumeric:
+            with irbuilder.goto_block(self.loop_object.entry_end):
+                errored_left = input_node.in_ports[0].value
+                errored_right = input_node.in_ports[1].value
+                left_error = irbuilder.extract_value(errored_left, 0)
+                right_error = irbuilder.extract_value(errored_right, 0)
+                self.loop_object.entry_end = irbuilder.block
+            with irbuilder.goto_block(self.loop_object.header_start):
                 self.out_ports[0].value = irbuilder.phi(
                     input_node.in_ports[0].value.type,
                     name=self.out_ports[0].label,
                 )
-                self.loop_object.ranged = True
-                self.loop_object.left_boundary = left  # for reduction array heuristics
-                self.loop_object.right_boundary = (
-                    right  # for reduction array heuristics
-                )
-                self.out_ports[1].value = irbuilder.phi(  # STUB!
+                self.out_ports[1].value = irbuilder.phi(
                     input_node.in_ports[0].value.type,
-                    name=self.out_ports[0].label,
+                    name=self.out_ports[1].label,
                 )
+                # prepare error handling
+                error_block = irbuilder.append_basic_block(
+                    f"{self.name if hasattr(self,'name') else self.__class__.__name__ }_err_block"
+                )
+                no_error_block = irbuilder.append_basic_block(
+                    f"{self.name if hasattr(self,'name') else self.__class__.__name__ }_correct_exec_block"
+                )
+                with irbuilder.goto_block(self.loop_object.header_end):
+                    cond = irbuilder.phi(i1)
+                    irbuilder.cbranch(
+                        cond,
+                        self.loop_object.loop_body_start_block,
+                        self.loop_object.follower,
+                    )
+
+                with irbuilder.goto_block(error_block):
+                    cond.add_incoming(i1(1), error_block)
+                    irbuilder.branch(self.loop_object.header_end)
+                errcond = irbuilder.or_(left_error, right_error)
+                irbuilder.cbranch(errcond, error_block, no_error_block)
+                self.loop_object.ranged = True
+
+                # for reduction array heuristics
+                self.loop_object.left_boundary = errored_left
+                self.loop_object.right_boundary = errored_right
+
                 self.out_ports[0].value.add_incoming(
-                    left, self.loop_object.entry
-                )  # тут будет func entry
+                    errored_left, self.loop_object.entry_end
+                )
                 self.out_ports[1].value.add_incoming(  # STUB!
-                    left, self.loop_object.entry
+                    errored_left, self.loop_object.entry_end
                 )
                 with irbuilder.goto_block(self.loop_object.latch):
-                    element = irbuilder.add(
-                        self.out_ports[0].value, ll.Constant(i64, 1)
-                    )
+                    oldval = irbuilder.extract_value(self.out_ports[0].value, 1)
+                    element = irbuilder.add(oldval, ll.Constant(i64, 1))
+                    element = self.out_ports[0].type.pack_val(element, irbuilder)
                 self.out_ports[0].value.add_incoming(element, self.loop_object.latch)
                 self.out_ports[1].value.add_incoming(
                     element, self.loop_object.latch
                 )  # STUB!
-                cond = irbuilder.icmp_signed("<=", self.out_ports[0].value, right)
-                irbuilder.cbranch(
-                    cond,
-                    self.loop_object.loop_body_start_block,
-                    self.loop_object.follower,
-                )
+                with irbuilder.goto_block(no_error_block):
+                    new_left = irbuilder.extract_value(self.out_ports[0].value, 1)
+                    right = irbuilder.extract_value(errored_right, 1)
+                    cond.add_incoming(
+                        irbuilder.icmp_signed("<=", new_left, right),
+                        no_error_block,
+                    )
+                    irbuilder.branch(self.loop_object.header_end)
 
-            else:
-                pass
-            # TODO non-int ranges
+        else:
+            pass
+        # TODO non-int ranges
 
 
 class Condition(Node):
@@ -519,7 +618,9 @@ class PreCondition(Condition):
                     new_value = irbuilder.phi(
                         i_p.type.llvm_type()
                     )  # perhaps needs array consideration
-                    new_value.add_incoming(i_p.value, self.loop_object.entry)  # entry
+                    new_value.add_incoming(
+                        i_p.value, self.loop_object.entry_end
+                    )  # entry
                     new_value.add_incoming(
                         next(
                             o_p.value
@@ -542,14 +643,14 @@ class PostCondition(Condition):
         with irbuilder.goto_block(self.loop_object.header):
             cond = irbuilder.phi(ll.IntType(1))
             cond.add_incoming(
-                ll.Constant(ll.IntType(1), 0), self.loop_object.entry  # entry
+                ll.Constant(ll.IntType(1), 0), self.loop_object.entry_end  # entry
             )
             for i_p in self.in_ports:
                 if i_p.label in self.loop_object.phi_vars:
                     new_value = irbuilder.phi(
                         i_p.type.llvm_type()
                     )  # wtf this even is? consider arrays
-                    new_value.add_incoming(i_p.value, self.loop_object.entry)
+                    new_value.add_incoming(i_p.value, self.loop_object.entry_end)
                     new_value.add_incoming(
                         next(
                             o_p.value

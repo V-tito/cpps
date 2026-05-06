@@ -31,7 +31,7 @@ class Port:
 
 
 def copy_port_values(src_ports, dst_ports):
-    """ Copy C++ values assigned to source ports to matching destination ports.
+    """Copy C++/llvmlite values assigned to source ports to matching destination ports.
     Ex. If a new variable is defined in Init or LoopBody, we expect it to be
     available in Returns"""
     for d_p in dst_ports:
@@ -45,16 +45,18 @@ def copy_port_values(src_ports, dst_ports):
 
 
 def copy_port_values_explicit(src_ports, dst_ports):
-    """ Copy C++ values assigned to source ports to matching destination ports.
+    """Copy C++ values assigned to source ports to matching destination ports.
     Ex. If a new variable is defined in Init or LoopBody, we expect it to be
     available in Returns"""
     for index, (src, dst) in enumerate(zip(src_ports, dst_ports)):
         if src.label != dst.label:
-            raise CodeGenError(f"mismatch between port labels: {src.id}"
-                               f" and {dst.id} {src.label} {dst.label} "
-                               f"{src.node} {dst.node}"
-                               f"port number {index}",
-                               src.type.location)
+            raise CodeGenError(
+                f"mismatch between port labels: {src.id}"
+                f" and {dst.id} {src.label} {dst.label} "
+                f"{src.node} {dst.node}"
+                f"port number {index}",
+                src.type.location,
+            )
         dst.value = src.value
 
 

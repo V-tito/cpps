@@ -48,9 +48,11 @@ class Function(Node):
         self.mark_heap_allocation()
 
         # collect ir types corresponding to arg types in a list:
-        args = [port.type.llvm_type() for port in self.in_ports]
+        # args = [port.type.llvm_type() for port in self.in_ports]
+        args = [port.type.errored_llvm_type() for port in self.in_ports]
         # collect ir types corresponding to return types in a list:
-        ret_types = [port.type.llvm_type() for port in self.out_ports]
+        # ret_types = [port.type.llvm_type() for port in self.out_ports]
+        ret_types = [port.type.errored_llvm_type() for port in self.out_ports]
         # format types for llvmlite
         if len(ret_types) == 0:
             ret_type = ll.VoidType()
@@ -80,7 +82,6 @@ class Function(Node):
         # assign arguments to temp vars:
         for port, arg in zip(self.in_ports, func.args):
             port.value = arg
-
         # evaluate function output values (results):
         ret_vals = []
         for index, o_p in enumerate(self.out_ports):
@@ -115,15 +116,16 @@ class Function(Node):
                 heap_allocation_helper(o_p)
 
 
+# TODO and i do need to make vals packing in main, ofc
+# or perhaps even in ctypes
 def create_main(irbuilder: ll.IRBuilder):
     # passes down args and provides console output
     if "main" not in Function.functions:
         raise CodeGenError("Module must contain main-function.")
     main_ir = Function.functions["main"]
     main_ib = irbuilder.module.get_global("sisal_main")
-    args = [arg.type for arg in main_ib.args]
+    args = [i_p.type.llvm_type() for i_p in main_ir.in_ports]
     main_type = ll.FunctionType(ll.IntType(32), args)
-    print(isinstance(main_type, ll.Type))
     main = ll.Function(irbuilder.module, main_type, "main")
     block = main.append_basic_block()
     irbuilder.position_at_start(block)
@@ -173,7 +175,11 @@ def create_main(irbuilder: ll.IRBuilder):
     # тем более что у нас есть main_ir
     irbuilder.module.set_output({})
     printf = irbuilder.module.printf
-    res = irbuilder.call(main_ib, main.args)
+    errored_args = [
+        (i_p.type.pack_input(arg, irbuilder))
+        for i_p, arg in zip(main_ir.in_ports, main.args)
+    ]
+    res = irbuilder.call(main_ib, errored_args)
     if len(main_ir.out_ports) > 1:
         str_val = "{\n\00"
         printf_str(irbuilder, printf, str_val)

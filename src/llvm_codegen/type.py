@@ -8,7 +8,7 @@ import re
 import json
 import llvmlite.ir as ll
 import ctypes as ct
-from .llvm.llvmlite_helpers import printf_str
+from .llvm.llvmlite_helpers import printf_str, i1, i32, calc_memsize_at_runtime
 
 # from .codegen_state import global_no_error
 """Type classes have load_from_json_code and save_to_json_code
@@ -41,14 +41,50 @@ class Type:
             return self.__llvm_type__
 
     def add_printf(self, irbuilder: ll.IRBuilder, printf, val, label=None):
-        str_val = f"{label}: {self.fmt}\00" if label else f"{self.fmt}\00"
-        c_str_val = ll.Constant(
-            ll.ArrayType(ll.IntType(8), len(str_val)),
-            bytearray(str_val.encode("utf-8")),
-        )
-        c_str = irbuilder.alloca(c_str_val.type)
-        irbuilder.store(c_str_val, c_str)
-        irbuilder.call(printf, [c_str, val])
+        err_block = irbuilder.append_basic_block("val_errored")
+        no_err_block = irbuilder.append_basic_block("val_not_errored")
+        end_block = irbuilder.append_basic_block("end_printf")
+        err_flag = irbuilder.extract_value(val, 0)
+        irbuilder.cbranch(err_flag, err_block, no_err_block)
+        with irbuilder.goto_block(err_block):
+            str_val = f"{label}: ERROR\00" if label else f"ERROR\00"
+            c_str_val = ll.Constant(
+                ll.ArrayType(ll.IntType(8), len(str_val)),
+                bytearray(str_val.encode("utf-8")),
+            )
+            c_str = irbuilder.alloca(c_str_val.type)
+            irbuilder.store(c_str_val, c_str)
+            irbuilder.call(printf, [c_str])
+            irbuilder.branch(end_block)
+        with irbuilder.goto_block(no_err_block):
+            value = irbuilder.extract_value(val, 1)
+            str_val = f"{label}: {self.fmt}\00" if label else f"{self.fmt}\00"
+            c_str_val = ll.Constant(
+                ll.ArrayType(ll.IntType(8), len(str_val)),
+                bytearray(str_val.encode("utf-8")),
+            )
+            c_str = irbuilder.alloca(c_str_val.type)
+            irbuilder.store(c_str_val, c_str)
+            irbuilder.call(printf, [c_str, value])
+            irbuilder.branch(end_block)
+        irbuilder.position_at_start(end_block)
+
+    def errored_llvm_type(self):
+        return ll.LiteralStructType([ll.IntType(1), self.llvm_type()])
+
+    def pack_val(self, val, irbuilder: ll.IRBuilder):
+        ret = self.errored_llvm_type()(None)
+        ret = irbuilder.insert_value(ret, i1(0), 0)
+        ret = irbuilder.insert_value(ret, val, 1)
+        return ret
+
+    def make_error(self, irbuilder: ll.IRBuilder):
+        ret = self.errored_llvm_type()(None)
+        ret = irbuilder.insert_value(ret, i1(1), 0)
+        return ret
+
+    def pack_input(self, val, irbuilder):
+        return self.pack_val(val, irbuilder)
 
     @property
     def internal_type(self):
@@ -86,7 +122,9 @@ class ArrayType(Type):
     is_output_array = False
 
     def llvm_type(self):
-        return get_array_descriptor()
+        return (
+            get_array_descriptor()
+        )  # arr_descriptor with error; maybe will figure out a better way to do the crap
 
     def raw_type(self):
         return ll.ArrayType(
@@ -104,6 +142,44 @@ class ArrayType(Type):
             sizes = ArrayType.get_dim_sizes(vals[0], depth - 1)
         sizes.append(len(vals))
         return sizes
+
+    def pack_input(self, unerrored_array, irbuilder: ll.IRBuilder):
+        elemtyp = self.element
+        ptr = irbuilder.extract_value(unerrored_array, 0)
+        count = irbuilder.extract_value(unerrored_array, 1)
+        new_size = calc_memsize_at_runtime(
+            irbuilder, elemtyp.errored_llvm_type(), count
+        )
+        new_ptr = irbuilder.call(irbuilder.module.malloc, [new_size])
+        entry = irbuilder.block
+        loop_head = irbuilder.append_basic_block("array_converter_loop_header")
+        loop_bod_start = irbuilder.append_basic_block("array_converter_loop_body_start")
+        loop_latch = irbuilder.append_basic_block("array_converter_loop_latch")
+        follower = irbuilder.append_basic_block("array_converter_loop_follower")
+        irbuilder.branch(loop_head)
+        with irbuilder.goto_block(loop_head):
+            index = irbuilder.phi(i32)
+            index.add_incoming(i32(0), entry)
+            cond = irbuilder.icmp_signed("<", index, count)
+            irbuilder.cbranch(cond, loop_bod_start, follower)
+        with irbuilder.goto_block(loop_bod_start):
+            elemptr = irbuilder.gep(ptr, [index], source_etype=elemtyp.llvm_type())
+            elem = irbuilder.load(elemptr, typ=elemtyp.llvm_type())
+            elem = elemtyp.pack_input(elem, irbuilder)
+            new_elemptr = irbuilder.gep(
+                new_ptr, [index], source_etype=elemtyp.errored_llvm_type()
+            )
+            irbuilder.store(elem, new_elemptr)
+            irbuilder.branch(loop_latch)
+        with irbuilder.goto_block(loop_latch):
+            index.add_incoming(irbuilder.add(index, i32(1)), loop_latch)
+            irbuilder.branch(loop_head)
+        irbuilder.position_at_start(follower)
+        res = self.llvm_type()(None)
+        res = irbuilder.insert_value(res, new_ptr, 0)
+        res = irbuilder.insert_value(res, count, 1)
+        errored_res = self.pack_val(res, irbuilder)
+        return errored_res
 
     def get_fmt_string(self):
         res = f"[{f"{self.element.get_fmt_string()}, "*(self.count-1)+f"{self.element.get_fmt_string()}"}]\00"
@@ -154,29 +230,49 @@ class ArrayType(Type):
             elem_ptr = irbuilder.gep(
                 arr_ptr,
                 [i],  # ll.Constant(ll.IntType(32), 0),
-                source_etype=self.element.llvm_type(),
+                source_etype=self.element.errored_llvm_type(),
             )
-            elem = irbuilder.load(elem_ptr, typ=self.element.llvm_type())
+            elem = irbuilder.load(elem_ptr, typ=self.element.errored_llvm_type())
             self.element.add_printf(irbuilder, printf, elem)
             new_i = irbuilder.add(i, ll.Constant(ll.IntType(32), 1))
-            i.add_incoming(new_i, array_loop_block)
+            i.add_incoming(new_i, irbuilder.block)
             irbuilder.branch(array_loop_header)
         with irbuilder.goto_block(array_loop_follower):
             irbuilder.ret_void()
         return loop_func
 
     def add_printf(self, irbuilder, printf, val, label=None):
-        str_val = f"{label}: [\00" if label else "[\00"
-        printf_str(irbuilder, printf, str_val)
-        # valtype = self.make_dope_struct_type()
-        arr_ptr = irbuilder.extract_value(val, 0)
+        err_block = irbuilder.append_basic_block("val_errored")
+        no_err_block = irbuilder.append_basic_block("val_not_errored")
+        end_block = irbuilder.append_basic_block("end_printf")
+        err_flag = irbuilder.extract_value(val, 0)
+        irbuilder.cbranch(err_flag, err_block, no_err_block)
+        with irbuilder.goto_block(err_block):
+            str_val = f"{label}: ERROR\00" if label else f"ERROR\00"
+            c_str_val = ll.Constant(
+                ll.ArrayType(ll.IntType(8), len(str_val)),
+                bytearray(str_val.encode("utf-8")),
+            )
+            c_str = irbuilder.alloca(c_str_val.type)
+            irbuilder.store(c_str_val, c_str)
+            irbuilder.call(printf, [c_str])
+            irbuilder.branch(end_block)
+        with irbuilder.goto_block(no_err_block):
+            value = irbuilder.extract_value(val, 1)
 
-        count = irbuilder.extract_value(val, 1)
+            str_val = f"{label}: [\00" if label else "[\00"
+            printf_str(irbuilder, printf, str_val)
+            # valtype = self.make_dope_struct_type()
+            arr_ptr = irbuilder.extract_value(value, 0)
 
-        loopf = self.create_loop_func(irbuilder, printf)
-        irbuilder.call(loopf, [arr_ptr, count])
-        str_val = "]\00"
-        printf_str(irbuilder, printf, str_val)
+            count = irbuilder.extract_value(value, 1)
+
+            loopf = self.create_loop_func(irbuilder, printf)
+            irbuilder.call(loopf, [arr_ptr, count])
+            str_val = "]\00"
+            printf_str(irbuilder, printf, str_val)
+            irbuilder.branch(end_block)
+        irbuilder.position_at_start(end_block)
 
     """    def print_arr(self, ptr):
         dope_struct = ptr[0]
@@ -276,10 +372,12 @@ class AnyType(Type):
 class RecordType(Type):
 
     def __init__(self, type_object):
+        # TODO adjust to errors here
         class WidenedLitStruct(ll.LiteralStructType):
             def __init__(self, names, elems, packed=False):
                 super().__init__(elems, packed)
                 self.names_to_indices = names
+                # TODO adjust to errored
 
         super().__init__(type_object)
         self.__llvm_type__ = WidenedLitStruct(
@@ -289,10 +387,25 @@ class RecordType(Type):
             [(key, type_.ctype) for key, type_ in self.fields.items()]
         )
 
+    def errored_llvm_type(self):
+        res = ll.LiteralStructType(
+            [field.errored_llvm_type() for field in self.fields.values()]
+        )
+        errored_res = ll.LiteralStructType([i1, res])
+        return errored_res
+
     ctypes_count = 0
 
-    # static, contains description of corresponding C++
-    # structs as strings
+    def pack_input(self, unerrored_struct, irbuilder: ll.IRBuilder):
+        new_struct = unerrored_struct
+        for index, field in enumerate(self.fields.values()):
+            unerrored_val = irbuilder.extract_value(unerrored_struct, index)
+            errored_val = field.type.pack_input(unerrored_val, irbuilder)
+            new_struct = irbuilder.insert_value(new_struct, errored_val, index)
+        return new_struct
+
+    def get_errtyp(self):
+        return ll.IntType(len(self.fields))
 
     def names_to_indices(self):
         names = {}

@@ -108,26 +108,28 @@ def main(args):
                 llvm_src = compile_to_llvm(ir, module_name)
                 # put out a JSON containing the code and errors,
                 # or just plain code:
+                if "--print_raw" in args:
+                    print(str(llvm_src))
+                if "--print_optimized" in args:
+                    print(llvm_src.print_optimized())
+
                 if "--json" in args:
                     print(json.dumps({"errors": [], "llvm_src": [str(llvm_src)]}))
-                else:
-                    if "--bitcode" in args:
-                        from code_gen import compile_to_llvm_bitcode
 
-                        print(compile_to_llvm_bitcode(llvm_src, module_name))
-                    else:
-                        if "--llvmlitejit" in args:
-                            from code_gen import run_via_llvmlite
+                if "--bitcode" in args:
+                    from code_gen import compile_to_llvm_bitcode
 
-                            internal_args = json.loads(input("args as JSON:"))
-                            res = run_via_llvmlite(
-                                llvm_src, module_name, args=internal_args
-                            )
-                            print(f"\nStatus: {res}")
-                            # todo how to read n write args. ret lambda?
-                            # possibly would be eliminated later as adding read/write functions to ir seems more in tune with the current design
-                        else:
-                            print(str(llvm_src))
+                    print(compile_to_llvm_bitcode(llvm_src, module_name))
+
+                if "--llvmlitejit" in args:
+                    from code_gen import run_via_llvmlite
+
+                    internal_args = json.loads(input("args as JSON:"))
+                    res = run_via_llvmlite(llvm_src, module_name, args=internal_args)
+                    print(f"\nStatus: {res}")
+                    # todo how to read n write args. ret lambda?
+                    # possibly would be eliminated later as adding read/write functions to ir seems more in tune with the current design
+
             except Exception as e:
                 if debug_enabled():
                     raise (e)

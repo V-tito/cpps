@@ -23,10 +23,40 @@ class LlModule(ll.Module):
             ll.FunctionType(ll.PointerType(), [ll.IntType(64)]),
             name="malloc",
         )
+        self.calloc = ll.Function(
+            self,
+            ll.FunctionType(ll.PointerType(), [ll.IntType(64)]),
+            name="calloc",
+        )
         self.realloc = ll.Function(
             self,
             ll.FunctionType(ll.PointerType(), [ll.PointerType(), ll.IntType(64)]),
             name="realloc",
+        )
+        self.memcpy = ll.Function(
+            self,
+            ll.FunctionType(
+                ll.VoidType(),
+                [ll.PointerType(), ll.PointerType(), ll.IntType(64), ll.IntType(1)],
+            ),
+            name="llvm.memcpy.p0.p0.i64",
+        )
+        self.sizeof = ll.Function(
+            self,
+            ll.FunctionType(
+                ll.IntType(64), [ll.PointerType(), ll.PointerType(), ll.IntType(64)]
+            ),
+            name="sizeof",
+        )
+        self.int_power = ll.Function(
+            self,
+            ll.FunctionType(ll.IntType(64), [ll.IntType(64), ll.IntType(64)]),
+            name="llvm.powi.i64",
+        )
+        self.double_power = ll.Function(
+            self,
+            ll.FunctionType(ll.DoubleType(), [ll.DoubleType(), ll.DoubleType()]),
+            name="llvm.pow.f64",
         )
         self.free = ll.Function(
             self,
@@ -93,7 +123,25 @@ class LlModule(ll.Module):
 
             return c_int
 
-    def bitcode_gen(self, target_triple=None):
+    @staticmethod
+    def optimize(module, target_machine):
+        pto = llvm.create_pipeline_tuning_options(
+            speed_level=1, size_level=0
+        )  # speed: 0-3, size:0-2
+        # pto.loop_vectorization = True
+        # pto.slp_vectorization = True
+        # pto.loop_unrolling = True
+        # Create the pass builder
+        pass_builder = llvm.create_pass_builder(target_machine, pto)
+
+        # Get a populated module pass manager
+        mpm = pass_builder.getModulePassManager()
+        # mpm.add_instruction_combine_pass()
+        # mpm.add_simplify_cfg_pass()
+
+        mpm.run(module, pass_builder)
+
+    def preprocess_ir(self, target_triple=None):
         module = llvm.parse_assembly(str(self))
         llvm.initialize_native_target()
         llvm.initialize_native_asmprinter()
@@ -102,11 +150,20 @@ class LlModule(ll.Module):
         else:
             target = llvm.Target.from_triple(target_triple)
         target_machine = target.create_target_machine()
+        self.optimize(module, target_machine)
         engine = llvm.create_mcjit_compiler(module, target_machine)
         engine.finalize_object()
         engine.run_static_constructors()
         self.engine = engine
         self.modref = module
+        return module
+
+    def print_optimized(self, target_triple=None):
+        module = self.preprocess_ir(target_triple)
+        return str(module)
+
+    def bitcode_gen(self, target_triple=None):
+        module = self.preprocess_ir(target_triple)
         return module.as_bitcode()
 
     def run_on_jit(self, args: list):
@@ -143,13 +200,13 @@ class LlModule(ll.Module):
             arg_formatted = argtype.to_ctype(arg)
             args_formatted.append(arg_formatted)
 
-        '''def timer():
+        def timer():
             return cfunc(*args_formatted)
 
         import timeit
 
         time = timeit.timeit(timer, globals=globals(), number=500000)
-        return f"Total time for 500000 executions: {time:.6f} seconds\nAverage per execution: {time/500000:.10f} seconds"'''
+        return f"Total time for 500000 executions: {time:.6f} seconds\nAverage per execution: {time/500000:.10f} seconds"
         res = cfunc(*args_formatted)
         return res
 

@@ -1,19 +1,11 @@
 import llvmlite.ir as ll
 
+i1 = ll.IntType(1)
 i32 = ll.IntType(32)
 i64 = ll.IntType(64)
 
-
-def i32constant(val: int):
-    return ll.Constant(i32, val)
-
-
-def i64constant(val: int):
-    return ll.Constant(i64, val)
-
-
-i32zero = i32constant(0)
-i32one = i32constant(1)
+i32zero = i32(0)
+i32one = i32(1)
 
 
 def printf_str(irbuilder, printf, str_val):
@@ -39,7 +31,7 @@ def calc_memsize_at_runtime(irbuilder: ll.IRBuilder, element_type, count):
         # Create a dummy allocation of 1 element
         dummy = irbuilder.alloca(element_type)
         if type(count) == int:
-            new_count = i32constant(count)
+            new_count = i32(count)
         else:
             new_count = count
         # Create a GEP at index 'count' and get the byte difference
@@ -55,3 +47,19 @@ def calc_memsize_at_runtime(irbuilder: ll.IRBuilder, element_type, count):
             memsizes[irbuilder.function][element_type] = {}
         memsizes[irbuilder.function][element_type][count] = size
         return size
+
+
+def create_error_handling_blocks(node, irbuilder: ll.IRBuilder):
+    # prepare error handling
+    error_block = irbuilder.append_basic_block(
+        f"{node.name if hasattr(node,'name') else node.__class__.__name__ }_err_block"
+    )
+    no_error_block = irbuilder.append_basic_block(
+        f"{node.name if hasattr(node,'name') else node.__class__.__name__ }_correct_exec_block"
+    )
+    phi_block = irbuilder.append_basic_block(
+        f"{node.name if hasattr(node,'name') else node.__class__.__name__ }_phi_block"
+    )
+    with irbuilder.goto_block(error_block):
+        irbuilder.branch(phi_block)
+    return error_block, no_error_block, phi_block

@@ -4,6 +4,7 @@
 code generator array initialization
 """
 
+import math
 import llvmlite.ir as ll
 import llvmlite.binding as llvm
 from ..type import ArrayType, get_array_descriptor
@@ -11,12 +12,7 @@ from ..type import ArrayType, get_array_descriptor
 # import llvmlite.binding as llvm
 from ..node import Node
 from ..llvm.llvm_codegen import llvm_eval, heap_allocation_helper
-from ..llvm.llvmlite_helpers import (
-    calc_memsize_at_runtime,
-    i32constant,
-    i32,
-    i64,
-)
+from ..llvm.llvmlite_helpers import calc_memsize_at_runtime, i32, i64, i1
 
 # from ..error import CodeGenError
 
@@ -37,8 +33,9 @@ class ArrayInit(Node):
         type_ = self.out_ports[0].type
         items = [llvm_eval(i_p, irbuilder) for i_p in self.in_ports]
         type_.count = len(items)
+        etyp = type_.element.errored_llvm_type()
         arg = calc_memsize_at_runtime(
-            irbuilder, type_.element.llvm_type(), type_.count
+            irbuilder, etyp, type_.count
         )  # here either elemtype+count or get raw
         ptr = irbuilder.call(
             irbuilder.module.malloc,
@@ -48,9 +45,9 @@ class ArrayInit(Node):
         parent_function.mallocs.add(ptr)
         if self.out_ports[0].type.is_output_array:
             parent_function.preserved_mallocs.add(ptr)
-        etyp = type_.element.llvm_type()
-        for index, item in enumerate(items):
-            indexIR = i32constant(index)
+
+        for index, i_p in enumerate(self.in_ports):
+            indexIR = i32(index)
             target = irbuilder.gep(
                 ptr,
                 [indexIR],
@@ -58,10 +55,13 @@ class ArrayInit(Node):
             )
             int_ = irbuilder.ptrtoint(target, i64)
             target = irbuilder.inttoptr(int_, ll.PointerType())
-            irbuilder.store(item, target)
-
-        record_type = ll.LiteralStructType([ll.PointerType(), i32])
+            irbuilder.store(i_p.value, target)
+        record_type = type_.llvm_type()
         new_var = ll.Constant(record_type, None)
         new_var = irbuilder.insert_value(new_var, ptr, 0)
-        new_var = irbuilder.insert_value(new_var, i32constant(type_.count), 1)
-        self.out_ports[0].value = new_var
+        new_var = irbuilder.insert_value(new_var, i32(type_.count), 1)
+        errored_ret_type = type_.errored_llvm_type()
+        errored_ret_val = errored_ret_type(None)
+        errored_ret_val = irbuilder.insert_value(errored_ret_val, i1(0), 0)
+        errored_ret_val = irbuilder.insert_value(errored_ret_val, new_var, 1)
+        self.out_ports[0].value = errored_ret_val
