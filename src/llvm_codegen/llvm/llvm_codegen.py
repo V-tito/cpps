@@ -126,7 +126,7 @@ class LlModule(ll.Module):
     @staticmethod
     def optimize(module, target_machine):
         pto = llvm.create_pipeline_tuning_options(
-            speed_level=1, size_level=0
+            speed_level=2, size_level=2
         )  # speed: 0-3, size:0-2
         # pto.loop_vectorization = True
         # pto.slp_vectorization = True
@@ -205,8 +205,9 @@ class LlModule(ll.Module):
 
         import timeit
 
-        time = timeit.timeit(timer, globals=globals(), number=500000)
-        return f"Total time for 500000 executions: {time:.6f} seconds\nAverage per execution: {time/500000:.10f} seconds"
+        time = timeit.timeit(timer, globals=globals(), number=5)
+        return f"Total time for 5 executions: {time:.6f} seconds\nAverage per execution: {time/5:.10f} seconds"
+
         res = cfunc(*args_formatted)
         return res
 
