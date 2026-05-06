@@ -1,7 +1,0 @@
-function main(N: integer  returns integer)
-   let
-      A := array[array[integer]] [ [N, N, N], [N, N, N], [N, N, N] ]
-   in
-      A[2][2]
-   end let
-end function
